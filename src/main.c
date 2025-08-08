@@ -62,6 +62,7 @@ typedef struct {
     char *input_name;
     char *rtltcp_host;
     ao_device *dev;
+    FILE *aac_file;
     FILE *hdc_file;
     FILE *iq_file;
     char *aas_files_path;
@@ -188,7 +189,7 @@ static void init_audio_buffers(state_t *st)
     pthread_mutex_init(&st->mutex, NULL);
 }
 
-static void write_adts_header(FILE *fp, unsigned int len)
+static void write_adts_header(FILE *fp, unsigned int len, unsigned int profile, unsigned int freq_index, unsigned int channels)
 {
     uint8_t hdr[7];
     bitwriter_t bw;
@@ -198,10 +199,10 @@ static void write_adts_header(FILE *fp, unsigned int len)
     bw_addbits(&bw, 0, 1); // MPEG-4
     bw_addbits(&bw, 0, 2); // Layer
     bw_addbits(&bw, 1, 1); // no CRC
-    bw_addbits(&bw, 1, 2); // AAC-LC
-    bw_addbits(&bw, 7, 4); // 22050 HZ
+    bw_addbits(&bw, profile, 2);
+    bw_addbits(&bw, freq_index, 4);
     bw_addbits(&bw, 0, 1); // private bit
-    bw_addbits(&bw, 2, 3); // 2-channel configuration
+    bw_addbits(&bw, channels, 3);
     bw_addbits(&bw, 0, 1);
     bw_addbits(&bw, 0, 1);
     bw_addbits(&bw, 0, 1);
@@ -215,7 +216,18 @@ static void write_adts_header(FILE *fp, unsigned int len)
 
 static void dump_hdc(FILE *fp, const uint8_t *pkt, unsigned int len)
 {
-    write_adts_header(fp, len);
+    // AAC-LC, 22050 Hz, 2 channels
+    write_adts_header(fp, len, 1, 7, 2);
+    fwrite(pkt, len, 1, fp);
+    fflush(fp);
+}
+
+static void dump_aac(FILE *fp, const uint8_t *pkt, unsigned int len)
+{
+    // HE-AAC (SBR), 44100 Hz, 2 channels
+    // The ADTS header for HE-AAC should still use the AAC-LC profile.
+    // The SBR data is in-band. We'll try signaling the higher sample rate.
+    write_adts_header(fp, len, 1, 4, 2);
     fwrite(pkt, len, 1, fp);
     fflush(fp);
 }
@@ -341,6 +353,9 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
         {
             if (st->hdc_file)
                 dump_hdc(st->hdc_file, evt->hdc.data, evt->hdc.count);
+
+            if (st->aac_file)
+                dump_aac(st->aac_file, evt->hdc.data, evt->hdc.count);
 
             st->audio_packets++;
             st->audio_bytes += evt->hdc.count * sizeof(evt->hdc.data[0]);
@@ -644,7 +659,7 @@ static void *input_main(void *arg)
 
 static void help(const char *progname)
 {
-    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--dump-aas-files directory] frequency program\n", progname);
+    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--aac-file aac-output] [--dump-aas-files directory] frequency program\n", progname);
 }
 
 static int parse_args(state_t *st, int argc, char *argv[])
@@ -653,10 +668,11 @@ static int parse_args(state_t *st, int argc, char *argv[])
         { "dump-aas-files", required_argument, NULL, 1 },
         { "dump-hdc", required_argument, NULL, 2 },
         { "am", no_argument, NULL, 3 },
+        { "aac-file", required_argument, NULL, 4 },
         { 0 }
     };
     const char *version = NULL;
-    char *output_name = NULL, *audio_name = NULL, *hdc_name = NULL;
+    char *output_name = NULL, *audio_name = NULL, *hdc_name = NULL, *aac_name = NULL;
     char *audio_type = "wav";
     char *endptr;
     int opt;
@@ -680,6 +696,9 @@ static int parse_args(state_t *st, int argc, char *argv[])
             break;
         case 3:
             st->mode = NRSC5_MODE_AM;
+            break;
+        case 4:
+            aac_name = optarg;
             break;
         case 'r':
             st->input_name = strdup(optarg);
@@ -801,6 +820,19 @@ static int parse_args(state_t *st, int argc, char *argv[])
         }
     }
 
+    if (aac_name)
+    {
+        if (strcmp(aac_name, "-") == 0)
+            st->aac_file = stdout;
+        else
+            st->aac_file = fopen(aac_name, "wb");
+        if (st->aac_file == NULL)
+        {
+            log_fatal("Unable to open AAC output.");
+            return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -823,6 +855,8 @@ static void cleanup(state_t *st)
         free(b);
     }
 
+    if (st->aac_file)
+        fclose(st->aac_file);
     if (st->hdc_file)
         fclose(st->hdc_file);
     if (st->iq_file)
