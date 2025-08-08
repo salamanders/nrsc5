@@ -62,7 +62,8 @@ typedef struct {
     char *input_name;
     char *rtltcp_host;
     ao_device *dev;
-    FILE *aac_file;
+    FILE *aac_file_22;
+    FILE *aac_file_44;
     FILE *hdc_file;
     FILE *iq_file;
     char *aas_files_path;
@@ -222,15 +223,6 @@ static void dump_hdc(FILE *fp, const uint8_t *pkt, unsigned int len)
     fflush(fp);
 }
 
-static void dump_aac(FILE *fp, const uint8_t *pkt, unsigned int len)
-{
-    // HE-AAC (SBR), 44100 Hz, 2 channels
-    // The ADTS header for HE-AAC should still use the AAC-LC profile.
-    // The SBR data is in-band. We'll try signaling the higher sample rate.
-    write_adts_header(fp, len, 1, 4, 2);
-    fwrite(pkt, len, 1, fp);
-    fflush(fp);
-}
 
 static void dump_aas_file(state_t *st, const nrsc5_event_t *evt)
 {
@@ -354,8 +346,21 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
             if (st->hdc_file)
                 dump_hdc(st->hdc_file, evt->hdc.data, evt->hdc.count);
 
-            if (st->aac_file)
-                dump_aac(st->aac_file, evt->hdc.data, evt->hdc.count);
+            if (st->aac_file_22)
+            {
+                // AAC-LC, 22050 Hz, 2 channels
+                write_adts_header(st->aac_file_22, evt->hdc.count, 1, 7, 2);
+                fwrite(evt->hdc.data, evt->hdc.count, 1, st->aac_file_22);
+                fflush(st->aac_file_22);
+            }
+
+            if (st->aac_file_44)
+            {
+                // AAC-LC, 44100 Hz, 2 channels
+                write_adts_header(st->aac_file_44, evt->hdc.count, 1, 4, 2);
+                fwrite(evt->hdc.data, evt->hdc.count, 1, st->aac_file_44);
+                fflush(st->aac_file_44);
+            }
 
             st->audio_packets++;
             st->audio_bytes += evt->hdc.count * sizeof(evt->hdc.data[0]);
@@ -659,7 +664,7 @@ static void *input_main(void *arg)
 
 static void help(const char *progname)
 {
-    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--aac-file aac-output] [--dump-aas-files directory] frequency program\n", progname);
+    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--aac-prefix aac-prefix] [--dump-aas-files directory] frequency program\n", progname);
 }
 
 static int parse_args(state_t *st, int argc, char *argv[])
@@ -668,11 +673,11 @@ static int parse_args(state_t *st, int argc, char *argv[])
         { "dump-aas-files", required_argument, NULL, 1 },
         { "dump-hdc", required_argument, NULL, 2 },
         { "am", no_argument, NULL, 3 },
-        { "aac-file", required_argument, NULL, 4 },
+        { "aac-prefix", required_argument, NULL, 4 },
         { 0 }
     };
     const char *version = NULL;
-    char *output_name = NULL, *audio_name = NULL, *hdc_name = NULL, *aac_name = NULL;
+    char *output_name = NULL, *audio_name = NULL, *hdc_name = NULL, *aac_prefix = NULL;
     char *audio_type = "wav";
     char *endptr;
     int opt;
@@ -698,7 +703,7 @@ static int parse_args(state_t *st, int argc, char *argv[])
             st->mode = NRSC5_MODE_AM;
             break;
         case 4:
-            aac_name = optarg;
+            aac_prefix = optarg;
             break;
         case 'r':
             st->input_name = strdup(optarg);
@@ -820,15 +825,22 @@ static int parse_args(state_t *st, int argc, char *argv[])
         }
     }
 
-    if (aac_name)
+    if (aac_prefix)
     {
-        if (strcmp(aac_name, "-") == 0)
-            st->aac_file = stdout;
-        else
-            st->aac_file = fopen(aac_name, "wb");
-        if (st->aac_file == NULL)
+        char filename[1024];
+        snprintf(filename, sizeof(filename), "%s_22.aac", aac_prefix);
+        st->aac_file_22 = fopen(filename, "wb");
+        if (st->aac_file_22 == NULL)
         {
-            log_fatal("Unable to open AAC output.");
+            log_fatal("Unable to open 22kHz AAC output.");
+            return 1;
+        }
+
+        snprintf(filename, sizeof(filename), "%s_44.aac", aac_prefix);
+        st->aac_file_44 = fopen(filename, "wb");
+        if (st->aac_file_44 == NULL)
+        {
+            log_fatal("Unable to open 44kHz AAC output.");
             return 1;
         }
     }
@@ -855,8 +867,10 @@ static void cleanup(state_t *st)
         free(b);
     }
 
-    if (st->aac_file)
-        fclose(st->aac_file);
+    if (st->aac_file_22)
+        fclose(st->aac_file_22);
+    if (st->aac_file_44)
+        fclose(st->aac_file_44);
     if (st->hdc_file)
         fclose(st->hdc_file);
     if (st->iq_file)
