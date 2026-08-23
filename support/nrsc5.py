@@ -41,15 +41,22 @@ class EventType(enum.Enum):
     LOT_HEADER = 24
     LOT_FRAGMENT = 25
     AGC = 26
+    EXCITER_INFO = 27
+    IMPORTER_INFO = 28
+    LEAP_SECOND_OFFSET = 29
+    LOCAL_TIME = 30
 
 
 AUDIO_FRAME_SAMPLES = 2048
 
 SAMPLE_RATE_CU8 = 1488375
-SAMPLE_RATE_CS16_FM = 744187.5
-SAMPLE_RATE_CS16_AM = 46511.71875
+SAMPLE_RATE_NATIVE_FM = 744187.5
+SAMPLE_RATE_NATIVE_AM = 46511.71875
+SAMPLE_RATE_CS16_FM = SAMPLE_RATE_NATIVE_FM
+SAMPLE_RATE_CS16_AM = SAMPLE_RATE_NATIVE_AM
 SAMPLE_RATE_AUDIO = 44100
 
+DEVICE_VERSION_LENGTH = 4
 
 class ServiceType(enum.Enum):
     AUDIO = 0
@@ -84,6 +91,7 @@ class MIMEType(enum.Enum):
     TTN_STM_TRAFFIC = 0xFF8422D7
     TTN_STM_WEATHER = 0xEF042E96
     UNKNOWN_00000000 = 0x00000000
+    UNKNOWN_1C7D0E29 = 0x1C7D0E29
     UNKNOWN_B81FFAA8 = 0xB81FFAA8
     UNKNOWN_FFFFFFFF = 0xFFFFFFFF
 
@@ -182,17 +190,22 @@ class HEREImageType(enum.Enum):
     TRAFFIC = 8
     WEATHER = 13
 
+class PacketFlags(enum.IntFlag):
+    NONE = 0
+    CRC_ERROR = 1 << 0
+
 
 IQ = collections.namedtuple("IQ", ["data"])
-Sync = collections.namedtuple("Sync", ["freq_offset", "psmi"])
+Sync = collections.namedtuple("Sync", ["freq_offset", "psmi", "pli", "hppi", "aabi", "rdbi"])
 MER = collections.namedtuple("MER", ["lower", "upper"])
 BER = collections.namedtuple("BER", ["cber"])
-HDC = collections.namedtuple("HDC", ["program", "data"])
+HDC = collections.namedtuple("HDC", ["program", "data", "flags"])
 Audio = collections.namedtuple("Audio", ["program", "data"])
 Comment = collections.namedtuple("Comment", ["lang", "short_content_desc", "full_text"])
 UFID = collections.namedtuple("UFID", ["owner", "id"])
 XHDR = collections.namedtuple("XHDR", ["mime", "param", "lot"])
-ID3 = collections.namedtuple("ID3", ["program", "title", "artist", "album", "genre", "ufid", "xhdr", "comments"])
+Commercial = collections.namedtuple("Commercial", ["price", "contact_url", "seller", "description", "received_as", "valid_until"])
+ID3 = collections.namedtuple("ID3", ["program", "title", "artist", "album", "genre", "ufid", "xhdr", "comments", "commercial"])
 SIGAudioComponent = collections.namedtuple("SIGAudioComponent", ["port", "type", "mime"])
 SIGDataComponent = collections.namedtuple("SIGDataComponent", ["port", "service_data_type", "type", "mime"])
 SIGComponent = collections.namedtuple("SIGComponent", ["type", "id", "audio", "data"])
@@ -219,7 +232,23 @@ AudioService = collections.namedtuple("AudioService", ["program", "access", "typ
 HEREImage = collections.namedtuple("HEREImage", ["image_type", "seq", "n1", "n2", "time_utc", "latitude1", "longitude1",
                                                  "latitude2", "longitude2", "name", "data"])
 AGC = collections.namedtuple("AGC", ["gain_db", "peak_dbfs", "is_final"])
+ExciterInfo = collections.namedtuple("ExciterInfo", ["manufacturer_id", "core_version", "core_status", "manufacturer_version", "manufacturer_status", "importer_connected"])
+ImporterInfo = collections.namedtuple("ImporterInfo", ["manufacturer_id", "core_version", "core_status", "manufacturer_version", "manufacturer_status"])
+LeapSecondOffset = collections.namedtuple("LeapOffset", ["pending_offset", "current_offset", "pending_alfn"])
+LocalTime = collections.namedtuple("LocalTime", ["utc_offset", "dst_regional", "dst_local", "dst_schedule"])
 
+class _TimeStruct(ctypes.Structure):
+    _fields_ = [
+        ("tm_sec", ctypes.c_int),
+        ("tm_min", ctypes.c_int),
+        ("tm_hour", ctypes.c_int),
+        ("tm_mday", ctypes.c_int),
+        ("tm_mon", ctypes.c_int),
+        ("tm_year", ctypes.c_int),
+        ("tm_wday", ctypes.c_int),
+        ("tm_yday", ctypes.c_int),
+        ("tm_isdst", ctypes.c_int),
+    ]
 
 class _IQ(ctypes.Structure):
     _fields_ = [
@@ -232,6 +261,10 @@ class _Sync(ctypes.Structure):
     _fields_ = [
         ("freq_offset", ctypes.c_float),
         ("psmi", ctypes.c_int),
+        ("pli", ctypes.c_int),
+        ("hppi", ctypes.c_int),
+        ("aabi", ctypes.c_int),
+        ("rdbi", ctypes.c_int),
     ]
 
 
@@ -253,6 +286,7 @@ class _HDC(ctypes.Structure):
         ("program", ctypes.c_uint),
         ("data", ctypes.POINTER(ctypes.c_char)),
         ("count", ctypes.c_size_t),
+        ("flags", ctypes.c_uint),
     ]
 
 
@@ -290,6 +324,15 @@ class _XHDR(ctypes.Structure):
         ("lot", ctypes.c_int),
     ]
 
+class _Commercial(ctypes.Structure):
+    _fields_ = [
+        ("price", ctypes.c_char_p),
+        ("contact_url", ctypes.c_char_p),
+        ("seller", ctypes.c_char_p),
+        ("description", ctypes.c_char_p),
+        ("received_as", ctypes.c_uint8),
+        ("valid_until", ctypes.POINTER(_TimeStruct)),
+    ]
 
 class _ID3(ctypes.Structure):
     _fields_ = [
@@ -301,6 +344,7 @@ class _ID3(ctypes.Structure):
         ("ufid", _UFID),
         ("xhdr", _XHDR),
         ("comments", ctypes.POINTER(_Comment)),
+        ("commercial", _Commercial),
     ]
 
 
@@ -382,21 +426,6 @@ class _PACKET(ctypes.Structure):
         ("service", ctypes.POINTER(_SIGService)),
         ("component", ctypes.POINTER(_SIGComponent)),
     ]
-
-
-class _TimeStruct(ctypes.Structure):
-    _fields_ = [
-        ("tm_sec", ctypes.c_int),
-        ("tm_min", ctypes.c_int),
-        ("tm_hour", ctypes.c_int),
-        ("tm_mday", ctypes.c_int),
-        ("tm_mon", ctypes.c_int),
-        ("tm_year", ctypes.c_int),
-        ("tm_wday", ctypes.c_int),
-        ("tm_yday", ctypes.c_int),
-        ("tm_isdst", ctypes.c_int),
-    ]
-
 
 class _LOT(ctypes.Structure):
     _fields_ = [
@@ -574,6 +603,39 @@ class _AGC(ctypes.Structure):
         ("is_final", ctypes.c_int),
     ]
 
+class _ExciterInfo(ctypes.Structure):
+    _fields_ = [
+        ("manufacturer_id", ctypes.c_char_p),
+        ("core_version", ctypes.c_int * DEVICE_VERSION_LENGTH),
+        ("core_status", ctypes.c_int),
+        ("manufacturer_version", ctypes.c_int * DEVICE_VERSION_LENGTH),
+        ("manufacturer_status", ctypes.c_int),
+        ("importer_connected", ctypes.c_int),
+    ]
+
+class _ImporterInfo(ctypes.Structure):
+    _fields_ = [
+        ("manufacturer_id", ctypes.c_char_p),
+        ("core_version", ctypes.c_int * DEVICE_VERSION_LENGTH),
+        ("core_status", ctypes.c_int),
+        ("manufacturer_version", ctypes.c_int * DEVICE_VERSION_LENGTH),
+        ("manufacturer_status", ctypes.c_int),
+    ]
+
+class _LeapSecondOffset(ctypes.Structure):
+    _fields_ = [
+        ("pending_offset", ctypes.c_int),
+        ("current_offset", ctypes.c_int),
+        ("pending_alfn", ctypes.c_uint)
+    ]
+
+class _LocalTime(ctypes.Structure):
+    _fields_ = [
+        ("utc_offset", ctypes.c_int),
+        ("dst_regional", ctypes.c_int),
+        ("dst_local", ctypes.c_int),
+        ("dst_schedule", ctypes.c_int)
+    ]
 
 class _EventUnion(ctypes.Union):
     _fields_ = [
@@ -601,6 +663,10 @@ class _EventUnion(ctypes.Union):
         ("audio_service", _AudioService),
         ("here_image", _HEREImage),
         ("agc", _AGC),
+        ("exciter_info", _ExciterInfo),
+        ("importer_info", _ImporterInfo),
+        ("leap_second_offset", _LeapSecondOffset),
+        ("local_time", _LocalTime)
     ]
 
 
@@ -666,7 +732,7 @@ class NRSC5:
             evt = IQ(iq.data[:iq.count])
         elif evt_type == EventType.SYNC:
             sync = c_evt.u.sync
-            evt = Sync(sync.freq_offset, sync.psmi)
+            evt = Sync(sync.freq_offset, sync.psmi, sync.pli, sync.hppi, sync.aabi, sync.rdbi)
         elif evt_type == EventType.MER:
             mer = c_evt.u.mer
             evt = MER(mer.lower, mer.upper)
@@ -675,7 +741,7 @@ class NRSC5:
             evt = BER(ber.cber)
         elif evt_type == EventType.HDC:
             hdc = c_evt.u.hdc
-            evt = HDC(hdc.program, hdc.data[:hdc.count])
+            evt = HDC(hdc.program, hdc.data[:hdc.count], PacketFlags(hdc.flags))
         elif evt_type == EventType.AUDIO:
             audio = c_evt.u.audio
             evt = Audio(audio.program, audio.data[:audio.count * 2])
@@ -697,9 +763,21 @@ class NRSC5:
                 c = comment_ptr.contents
                 comments.append(Comment(self._decode(c.lang), self._decode(c.short_content_desc), self._decode(c.full_text)))
                 comment_ptr = c.next
+            commercial = None
+            if id3.commercial.price is not None:
+                commercial = Commercial(self._decode(id3.commercial.price),
+                                        self._decode(id3.commercial.contact_url),
+                                        self._decode(id3.commercial.seller),
+                                        self._decode(id3.commercial.description),
+                                        id3.commercial.received_as,
+                                        datetime.date(
+                                            id3.commercial.valid_until.contents.tm_year + 1900,
+                                            id3.commercial.valid_until.contents.tm_mon + 1,
+                                            id3.commercial.valid_until.contents.tm_mday
+                                        ))
 
             evt = ID3(id3.program, self._decode(id3.title), self._decode(id3.artist),
-                      self._decode(id3.album), self._decode(id3.genre), ufid, xhdr, comments)
+                      self._decode(id3.album), self._decode(id3.genre), ufid, xhdr, comments, commercial)
         elif evt_type == EventType.SIG:
             evt = []
             self.services = {}
@@ -857,6 +935,19 @@ class NRSC5:
         elif evt_type == EventType.AGC:
             agc = c_evt.u.agc
             evt = AGC(agc.gain_db, agc.peak_dbfs, bool(agc.is_final))
+        elif evt_type == EventType.EXCITER_INFO:
+            exciter_info = c_evt.u.exciter_info
+            evt = ExciterInfo(self._decode(exciter_info.manufacturer_id), exciter_info.core_version, exciter_info.core_status, exciter_info.manufacturer_version, exciter_info.manufacturer_status,
+                             bool(exciter_info.importer_connected))
+        elif evt_type == EventType.IMPORTER_INFO:
+            importer_info = c_evt.u.importer_info
+            evt = ImporterInfo(self._decode(importer_info.manufacturer_id), importer_info.core_version, importer_info.core_status, importer_info.manufacturer_version, importer_info.manufacturer_status)
+        elif evt_type == EventType.LEAP_SECOND_OFFSET:
+            leap_second_offset = c_evt.u.leap_second_offset
+            evt = LeapSecondOffset(leap_second_offset.pending_offset, leap_second_offset.current_offset, leap_second_offset.pending_alfn)
+        elif evt_type == EventType.LOCAL_TIME:
+            local_time = c_evt.u.local_time
+            evt = LocalTime(local_time.utc_offset, bool(local_time.dst_regional), bool(local_time.dst_local), local_time.dst_schedule)
 
         self.callback(evt_type, evt, *self.callback_args)
 
@@ -994,3 +1085,16 @@ class NRSC5:
         result = NRSC5.libnrsc5.nrsc5_pipe_samples_cs16(self.radio, samples, len(samples) // 2)
         if result != 0:
             raise NRSC5Error("Failed to pipe samples.")
+
+    def pipe_samples_cf32(self, samples):
+        if len(samples) % 8 != 0:
+            raise NRSC5Error("len(samples) must be a multiple of 8.")
+        result = NRSC5.libnrsc5.nrsc5_pipe_samples_cf32(self.radio, samples, len(samples) // 4)
+        if result != 0:
+            raise NRSC5Error("Failed to pipe samples.")
+
+    def reset(self):
+        self._check_session()
+        result = NRSC5.libnrsc5.nrsc5_reset(self.radio)
+        if result != 0:
+            raise NRSC5Error("Failed to reset session.")

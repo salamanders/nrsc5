@@ -48,11 +48,11 @@ void nrsc5_report(nrsc5_t *, const nrsc5_event_t *evt);
 void nrsc5_report_lost_device(nrsc5_t *st);
 void nrsc5_report_agc(nrsc5_t *st, float gain_db, float peak_dbfs, int is_final);
 void nrsc5_report_iq(nrsc5_t *, const void *data, size_t count);
-void nrsc5_report_sync(nrsc5_t *, float freq_offset, int psmi);
+void nrsc5_report_sync(nrsc5_t *, float freq_offset, int psmi, int pli, int hppi, int aabi, int rdbi);
 void nrsc5_report_lost_sync(nrsc5_t *);
 void nrsc5_report_mer(nrsc5_t *, float lower, float upper);
 void nrsc5_report_ber(nrsc5_t *, float cber);
-void nrsc5_report_hdc(nrsc5_t *, unsigned int program, const uint8_t *data, size_t count);
+void nrsc5_report_hdc(nrsc5_t *, unsigned int program, const packet_t* pkt);
 void nrsc5_report_audio(nrsc5_t *, unsigned int program, const int16_t *data, size_t count);
 void nrsc5_report_stream(nrsc5_t *, uint16_t seq, unsigned int size, const uint8_t *data,
                          nrsc5_sig_service_t *service, nrsc5_sig_component_t *component);
@@ -87,3 +87,11 @@ void nrsc5_report_emergency_alert(nrsc5_t *st, const char *message, const uint8_
 void nrsc5_report_here_image(nrsc5_t *st, int image_type, int seq, int n1, int n2, unsigned int timestamp,
                              float latitude1, float longitude1, float latitude2, float longitude2,
                              const char *name, unsigned int size, const uint8_t *data);
+void nrsc5_report_exciter_info(nrsc5_t *st, const char* manufacturer_id, const int core_version[4], const int manufacturer_version[4],
+                               int core_status, int manufacturer_status, int importer_connected);
+void nrsc5_report_importer_info(nrsc5_t *st, const char* manufacturer_id, const int core_version[4], const int manufacturer_version[4],
+                                int core_status, int manufacturer_status);
+void nrsc5_report_leap_second_offset(nrsc5_t *st, int pending_offset, int current_offset,
+                                     unsigned int pending_alfn);
+void nrsc5_report_local_time(nrsc5_t *st, int utc_offset, int dst_regional, int dst_local,
+                             int dst_schedule);

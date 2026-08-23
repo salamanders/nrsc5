@@ -18,7 +18,6 @@
 #include <math.h>
 #include <nrsc5.h>
 #include <pthread.h>
-#include <sys/time.h>
 #include <unistd.h>
 
 #include <assert.h>
@@ -36,20 +35,29 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <termios.h>
+#include <poll.h>
 #endif
 
 #include "bitwriter.h"
 #include "log.h"
 
-#define AUDIO_BUFFERS 128
-#define AUDIO_THRESHOLD 8
+#define AUDIO_BUFFERS 16
 #define AUDIO_DATA_LENGTH 8192
+#define FILE_BUFFER_LENGTH 32768
+#define STDIN_POLL_RATE_MS 100
 
 typedef struct buffer_t {
     struct buffer_t *next;
     // The samples are signed 16-bit integers, but ao_play requires a char buffer.
     char data[AUDIO_DATA_LENGTH];
 } audio_buffer_t;
+
+enum iq_format {
+    IQ_FORMAT_NONE,
+    IQ_FORMAT_CU8,
+    IQ_FORMAT_CS16,
+    IQ_FORMAT_CF32,
+};
 
 typedef struct {
     float freq;
@@ -65,15 +73,17 @@ typedef struct {
     FILE *hdc_file;
     FILE *iq_file;
     char *aas_files_path;
+    enum iq_format iq_input_format;
 
     audio_buffer_t *head, *tail, *free;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 
     unsigned int program;
-    unsigned int audio_ready;
+    unsigned int audio_packets_valid;
     unsigned int audio_packets;
     unsigned int audio_bytes;
+    unsigned int audio_errors;
     int done;
 } state_t;
 
@@ -116,44 +126,30 @@ static void reset_audio_buffers(state_t *st)
 static void push_audio_buffer(state_t *st, unsigned int program, const int16_t *data, size_t count)
 {
     audio_buffer_t *b;
-    struct timespec ts;
-    struct timeval now;
-
-    gettimeofday(&now, NULL);
-    ts.tv_sec = now.tv_sec;
-    ts.tv_nsec = (now.tv_usec + 100000) * 1000;
-    if (ts.tv_nsec >= 1000000000)
-    {
-        ts.tv_nsec -= 1000000000;
-        ts.tv_sec += 1;
-    }
 
     pthread_mutex_lock(&st->mutex);
     if (program != st->program)
         goto unlock;
 
-    while (st->free == NULL)
+    if (st->input_name)
     {
-        if (pthread_cond_timedwait(&st->cond, &st->mutex, &ts) == ETIMEDOUT)
+        while (st->free == NULL)
+            pthread_cond_wait(&st->cond, &st->mutex);
+    }
+    else
+    {
+        if (st->free == NULL)
         {
-            log_warn("Audio output timed out, dropping samples");
-            reset_audio_buffers(st);
+            log_warn("Audio output queue full, dropping samples");
+            goto unlock;
         }
     }
+
     b = st->free;
     st->free = b->next;
-    pthread_mutex_unlock(&st->mutex);
 
     assert(AUDIO_DATA_LENGTH == count * sizeof(data[0]));
     memcpy(b->data, data, count * sizeof(data[0]));
-
-    pthread_mutex_lock(&st->mutex);
-    if (program != st->program)
-    {
-        b->next = st->free;
-        st->free = b;
-        goto unlock;
-    }
 
     b->next = NULL;
     if (st->tail)
@@ -161,9 +157,6 @@ static void push_audio_buffer(state_t *st, unsigned int program, const int16_t *
     else
         st->head = b;
     st->tail = b;
-
-    if (st->audio_ready < AUDIO_THRESHOLD)
-        st->audio_ready++;
 
     pthread_cond_signal(&st->cond);
 
@@ -288,12 +281,22 @@ static void done_signal(state_t *st)
     pthread_mutex_unlock(&st->mutex);
 }
 
+static int is_done(state_t *st)
+{
+    int done;
+
+    pthread_mutex_lock(&st->mutex);
+    done = st->done;
+    pthread_mutex_unlock(&st->mutex);
+
+    return done;
+}
+
 static void change_program(state_t *st, unsigned int program)
 {
     pthread_mutex_lock(&st->mutex);
 
     // reset audio buffers
-    st->audio_ready = 0;
     if (st->tail)
     {
         st->tail->next = st->free;
@@ -344,10 +347,22 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
 
             st->audio_packets++;
             st->audio_bytes += evt->hdc.count * sizeof(evt->hdc.data[0]);
-            if (st->audio_packets >= 32) {
-                log_info("Audio bit rate: %.1f kbps", (float)st->audio_bytes * 8 * NRSC5_SAMPLE_RATE_AUDIO / NRSC5_AUDIO_FRAME_SAMPLES / st->audio_packets / 1000);
-                st->audio_packets = 0;
+            if (evt->hdc.flags & NRSC5_PKT_FLAGS_CRC_ERROR)
+                st->audio_errors++;
+            else
+                st->audio_packets_valid++;
+
+            if (st->audio_packets_valid >= 32) {
+                log_info("Audio bit rate: %.1f kbps", (float)st->audio_bytes * 8 * NRSC5_SAMPLE_RATE_AUDIO / NRSC5_AUDIO_FRAME_SAMPLES / st->audio_packets_valid / 1000);
+                st->audio_packets_valid = 0;
                 st->audio_bytes = 0;
+            }
+            if (st->audio_packets >= 32)
+            {
+                if (st->audio_errors > 0)
+                    log_warn("Audio packet CRC mismatches: %d", st->audio_errors);
+                st->audio_packets = 0;
+                st->audio_errors = 0;
             }
         }
         break;
@@ -358,7 +373,25 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
         log_info("Synchronized");
         log_info("Frequency offset: %.0f Hz", evt->sync.freq_offset);
         log_info("Primary service mode: %d", evt->sync.psmi);
-        st->audio_ready = 0;
+        if (evt->sync.pli != -1)
+        {
+            char am_flags[128] = "";
+            strcat(am_flags, "Digital bandwidth: ");
+            strcat(am_flags, evt->sync.rdbi ? "reduced" : "full");
+            if (!evt->sync.rdbi)
+            {
+                if (evt->sync.psmi != 2)
+                {
+                    strcat(am_flags, ", analog bandwidth: ");
+                    strcat(am_flags, evt->sync.aabi ? "8 kHz" : "5 kHz");
+                    strcat(am_flags, ", secondary/tertiary power: ");
+                    strcat(am_flags, evt->sync.pli ? "high" : "low");
+                }
+                strcat(am_flags, ", PIDS power: ");
+                strcat(am_flags, evt->sync.hppi ? "high" : "low");
+            }
+            log_info(am_flags);
+        }
         break;
     case NRSC5_EVENT_LOST_SYNC:
         log_info("Lost synchronization");
@@ -380,6 +413,11 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
                 log_info("Unique file identifier: %s %s", evt->id3.ufid.owner, evt->id3.ufid.id);
             if (evt->id3.xhdr.param >= 0)
                 log_info("XHDR: %d %08X %d", evt->id3.xhdr.param, evt->id3.xhdr.mime, evt->id3.xhdr.lot);
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d", evt->id3.commercial.valid_until);
+            if (evt->id3.commercial.price)
+                log_info("Commercial: price=%s until=%s url=\"%s\" seller=\"%s\" desc=\"%s\" received_as=%d",
+                    evt->id3.commercial.price, time_str, evt->id3.commercial.contact_url, evt->id3.commercial.seller,
+                    evt->id3.commercial.description, evt->id3.commercial.received_as);
         }
         break;
     case NRSC5_EVENT_SIG:
@@ -533,6 +571,37 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
                  evt->here_image.name,
                  evt->here_image.size);
         break;
+    case NRSC5_EVENT_EXCITER_INFO:
+        log_debug("Exciter manuf. \"%s\", core version %d.%d.%d.%d, core status %d, manuf. version %d.%d.%d.%d, manuf. status %d, importer connected? %s",
+                  evt->exciter_info.manufacturer_id,
+                  evt->exciter_info.core_version[0], evt->exciter_info.core_version[1], evt->exciter_info.core_version[2],
+                  evt->exciter_info.core_version[3], evt->exciter_info.core_status,
+                  evt->exciter_info.manufacturer_version[0], evt->exciter_info.manufacturer_version[1], evt->exciter_info.manufacturer_version[2],
+                  evt->exciter_info.manufacturer_version[3], evt->exciter_info.manufacturer_status,
+                  evt->exciter_info.importer_connected ? "yes" : "no");
+        break;
+    case NRSC5_EVENT_IMPORTER_INFO:
+        log_debug("Importer manuf. \"%s\", core version %d.%d.%d.%d, core status %d, manuf. version %d.%d.%d.%d, manuf. status %d",
+                  evt->importer_info.manufacturer_id,
+                  evt->importer_info.core_version[0], evt->importer_info.core_version[1], evt->importer_info.core_version[2],
+                  evt->importer_info.core_version[3], evt->importer_info.core_status,
+                  evt->importer_info.manufacturer_version[0], evt->importer_info.manufacturer_version[1], evt->importer_info.manufacturer_version[2],
+                  evt->importer_info.manufacturer_version[3], evt->importer_info.manufacturer_status);
+        break;
+    case NRSC5_EVENT_LEAP_SECOND_OFFSET:
+        log_debug("Leap second offset: pending=%d, current=%d, ALFN of pending adjustment=%d",
+                 evt->leap_second_offset.pending_offset,
+                 evt->leap_second_offset.current_offset,
+                 evt->leap_second_offset.pending_alfn);
+        break;
+    case NRSC5_EVENT_LOCAL_TIME:
+        log_debug("Local time: UTC offset=%d minutes, DST schedule=%d, DST in effect regionally? %s, DST practiced locally? %s",
+                 evt->local_time.utc_offset,
+                 evt->local_time.dst_schedule,
+                 evt->local_time.dst_regional ? "yes" : "no",
+                 evt->local_time.dst_local ? "yes" : "no");
+        break;
+
     }
 }
 
@@ -579,12 +648,66 @@ static int connect_tcp(char *host, const char *default_port)
     return s;
 }
 
-#ifndef __MINGW32__
-static void restore_termios(void *arg)
+static void *audio_main(void *arg)
 {
-    tcsetattr(STDIN_FILENO, TCSANOW, arg);
+    state_t *st = arg;
+
+    while (1)
+    {
+        audio_buffer_t *b;
+
+        pthread_mutex_lock(&st->mutex);
+        while (!st->done && (st->head == NULL))
+            pthread_cond_wait(&st->cond, &st->mutex);
+
+        // exit once done and no more audio buffers
+        if (st->head == NULL)
+        {
+            pthread_mutex_unlock(&st->mutex);
+            break;
+        }
+
+        // unlink from head list
+        b = st->head;
+        st->head = b->next;
+        if (st->head == NULL)
+            st->tail = NULL;
+        pthread_mutex_unlock(&st->mutex);
+
+        ao_play(st->dev, b->data, sizeof(b->data));
+
+        pthread_mutex_lock(&st->mutex);
+        // add to free list
+        b->next = st->free;
+        st->free = b;
+        pthread_cond_signal(&st->cond);
+        pthread_mutex_unlock(&st->mutex);
+    }
+
+    return NULL;
 }
-#endif
+
+static void on_key_press(state_t *st, char ch)
+{
+    switch (ch)
+    {
+    case 'q':
+        done_signal(st);
+        // user wants to immediately exit, so reset audio buffer
+        change_program(st, -1);
+        break;
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+        change_program(st, ch - '0');
+        break;
+    }
+}
 
 static void *input_main(void *arg)
 {
@@ -603,41 +726,72 @@ static void *input_main(void *arg)
 
     // disable terminal canonical mode
     tcgetattr(STDIN_FILENO, &prev_termios);
-    pthread_cleanup_push(restore_termios, &prev_termios);
     t = prev_termios;
     t.c_lflag &= ~ICANON;
     tcsetattr(STDIN_FILENO, TCSANOW, &t);
+
+    struct pollfd pfd;
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
 #endif
 
-    while (!st->done)
+    while (!is_done(st))
     {
-        char ch;
-        if (read(STDIN_FILENO, &ch, 1) != 1)
-            break;
+#ifdef __MINGW32__
+        INPUT_RECORD r;
+        DWORD read;
 
-        switch (ch)
+        switch (WaitForSingleObject(hStdin, STDIN_POLL_RATE_MS))
         {
-        case 'q':
-            done_signal(st);
-            // user wants to immediately exit, so reset audio buffer
-            change_program(st, -1);
+        case WAIT_TIMEOUT:
+            continue;
+        case WAIT_OBJECT_0:
+            if (!ReadConsoleInput(hStdin, &r, 1, &read))
+            {
+                log_error("Stdin read failed: ReadConsoleInput error %d", GetLastError());
+                break;
+            }
+
+            const KEY_EVENT_RECORD key = r.Event.KeyEvent;
+
+            if (r.EventType == KEY_EVENT && key.bKeyDown)
+                on_key_press(st, key.uChar.AsciiChar);
             break;
-        case '0':
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-        case '5':
-        case '6':
-        case '7':
-            change_program(st, ch - '0');
+        case WAIT_ABANDONED:
+            log_error("Waiting for stdin failed: WAIT_ABANDONED");
+            break;
+        case WAIT_FAILED:
+            log_error("Waiting for stdin failed: WAIT_FAILED");
+            break;
+        default:
             break;
         }
+
+#else
+        int ret = poll(&pfd, 1, STDIN_POLL_RATE_MS);
+        char ch;
+
+        if (ret > 0)
+        {
+            if (pfd.revents & POLLIN)
+            {
+                if (read(STDIN_FILENO, &ch, 1))
+                    on_key_press(st, ch);
+            }
+        }
+        else if (ret == 0)
+            continue;
+        else
+        {
+            log_error("Stdin read failed: poll error %d", errno);
+            break;
+        }
+#endif
     }
 
 #ifndef __MINGW32__
     // restore terminal settings
-    pthread_cleanup_pop(1);
+    tcsetattr(STDIN_FILENO, TCSANOW, &prev_termios);
 #endif
 
     return NULL;
@@ -645,7 +799,14 @@ static void *input_main(void *arg)
 
 static void help(const char *progname)
 {
-    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--dump-aas-files directory] frequency program\n", progname);
+    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [--iq-input-format {cu8,cs16}] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--dump-aas-files directory] frequency program\n", progname);
+}
+
+static int ends_with(const char *str, const char *suffix)
+{
+    const size_t len = strlen(str);
+    const size_t suffix_len = strlen(suffix);
+    return (len >= suffix_len) && (strcmp(str + len - suffix_len, suffix) == 0);
 }
 
 static int parse_args(state_t *st, int argc, char *argv[])
@@ -654,6 +815,7 @@ static int parse_args(state_t *st, int argc, char *argv[])
         { "dump-aas-files", required_argument, NULL, 1 },
         { "dump-hdc", required_argument, NULL, 2 },
         { "am", no_argument, NULL, 3 },
+        { "iq-input-format", required_argument, NULL, 4 },
         { 0 }
     };
     const char *version = NULL;
@@ -667,6 +829,7 @@ static int parse_args(state_t *st, int argc, char *argv[])
     st->bias_tee = 0;
     st->direct_sampling = -1;
     st->ppm_error = INT_MIN;
+    st->iq_input_format = IQ_FORMAT_NONE;
     log_set_level(LOG_INFO);
 
     while ((opt = getopt_long(argc, argv, "r:w:o:t:d:p:g:ql:vH:TD:", long_opts, NULL)) != -1)
@@ -681,6 +844,25 @@ static int parse_args(state_t *st, int argc, char *argv[])
             break;
         case 3:
             st->mode = NRSC5_MODE_AM;
+            break;
+        case 4:
+            if (strcmp(optarg, "cu8") == 0)
+            {
+                st->iq_input_format = IQ_FORMAT_CU8;
+            }
+            else if (strcmp(optarg, "cs16") == 0)
+            {
+                st->iq_input_format = IQ_FORMAT_CS16;
+            }
+            else if (strcmp(optarg, "cf32") == 0)
+            {
+                st->iq_input_format = IQ_FORMAT_CF32;
+            }
+            else
+            {
+                log_fatal("I/Q input format must be either cu8, cs16 or cf32.");
+                return -1;
+            }
             break;
         case 'r':
             st->input_name = strdup(optarg);
@@ -756,6 +938,16 @@ static int parse_args(state_t *st, int argc, char *argv[])
         // compatibility with previous versions
         if (st->freq < 10000.0f)
             st->freq *= 1e6f;
+    }
+
+    if (st->input_name && (st->iq_input_format == IQ_FORMAT_NONE))
+    {
+        if (ends_with(st->input_name, ".cs16"))
+            st->iq_input_format = IQ_FORMAT_CS16;
+        else if (ends_with(st->input_name, ".cf32"))
+            st->iq_input_format = IQ_FORMAT_CF32;
+        else
+            st->iq_input_format = IQ_FORMAT_CU8;
     }
 
     st->program = strtoul(argv[optind++], &endptr, 0);
@@ -839,9 +1031,11 @@ static void cleanup(state_t *st)
 int main(int argc, char *argv[])
 {
     pthread_mutex_t log_mutex;
+    pthread_t audio_thread;
     pthread_t input_thread;
     nrsc5_t *radio = NULL;
     state_t *st = calloc(1, sizeof(state_t));
+    FILE *fp = NULL;
 
     pthread_mutex_init(&log_mutex, NULL);
     log_set_lock(log_lock);
@@ -860,13 +1054,13 @@ int main(int argc, char *argv[])
 
     if (st->input_name)
     {
-        FILE *fp = strcmp(st->input_name, "-") == 0 ? stdin : fopen(st->input_name, "rb");
+        fp = strcmp(st->input_name, "-") == 0 ? stdin : fopen(st->input_name, "rb");
         if (fp == NULL)
         {
-            log_fatal("Open IQ file failed.");
+            log_fatal("Open IQ file failed: %s", strerror(errno));
             return 1;
         }
-        if (nrsc5_open_file(&radio, fp) != 0)
+        if (nrsc5_open_pipe(&radio) != 0)
         {
             log_fatal("Open IQ failed.");
             return 1;
@@ -923,46 +1117,53 @@ int main(int argc, char *argv[])
     nrsc5_set_callback(radio, callback, st);
     nrsc5_start(radio);
 
+    pthread_create(&audio_thread, NULL, audio_main, st);
     pthread_create(&input_thread, NULL, input_main, st);
 
-    while (1)
+    if (st->input_name)
     {
-        audio_buffer_t *b;
+        uint8_t buffer[FILE_BUFFER_LENGTH];
 
-        pthread_mutex_lock(&st->mutex);
-        while (!st->done && (st->head == NULL || st->audio_ready < AUDIO_THRESHOLD))
-            pthread_cond_wait(&st->cond, &st->mutex);
-
-        // exit once done and no more audio buffers
-        if (st->head == NULL)
+        while (!is_done(st))
         {
-            pthread_mutex_unlock(&st->mutex);
-            break;
+            size_t samples_read = 0;
+            
+            if (st->iq_input_format == IQ_FORMAT_CU8) {
+                samples_read = fread(buffer, 2, sizeof(buffer) / 2, fp);
+            } else if (st->iq_input_format == IQ_FORMAT_CS16) {
+                samples_read = fread(buffer, 4, sizeof(buffer) / 4, fp);
+            } else if (st->iq_input_format == IQ_FORMAT_CF32) {
+                samples_read = fread(buffer, 8, sizeof(buffer) / 8, fp);
+            }
+
+            if (samples_read == 0)
+            {
+                done_signal(st);
+                break;
+            }
+
+            if (st->iq_input_format == IQ_FORMAT_CU8) {
+                nrsc5_pipe_samples_cu8(radio, buffer, samples_read * 2);
+            } else if (st->iq_input_format == IQ_FORMAT_CS16) {
+                nrsc5_pipe_samples_cs16(radio, (int16_t *)buffer, samples_read * 2);
+            } else if (st->iq_input_format == IQ_FORMAT_CF32) {
+                nrsc5_pipe_samples_cf32(radio, (float *)buffer, samples_read * 2);
+            }
         }
-
-        // unlink from head list
-        b = st->head;
-        st->head = b->next;
-        if (st->head == NULL)
-            st->tail = NULL;
-        pthread_mutex_unlock(&st->mutex);
-
-        ao_play(st->dev, b->data, sizeof(b->data));
-
-        pthread_mutex_lock(&st->mutex);
-        // add to free list
-        b->next = st->free;
-        st->free = b;
-        pthread_cond_signal(&st->cond);
-        pthread_mutex_unlock(&st->mutex);
     }
 
-    pthread_cancel(input_thread);
+    pthread_join(audio_thread, NULL);
     pthread_join(input_thread, NULL);
 
     nrsc5_stop(radio);
     nrsc5_set_bias_tee(radio, 0);
     nrsc5_close(radio);
+
+    if (st->input_name)
+    {
+        fclose(fp);
+    }
+
     cleanup(st);
     free(st);
     ao_shutdown();

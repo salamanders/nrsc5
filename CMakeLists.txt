@@ -1,5 +1,5 @@
-cmake_minimum_required (VERSION 3.5)
-cmake_policy (VERSION 3.5...3.28)
+cmake_minimum_required (VERSION 3.10)
+cmake_policy (VERSION 3.10...3.28)
 include (CheckLibraryExists)
 include (CheckSymbolExists)
 include (ExternalProject)
@@ -192,7 +192,7 @@ if (BUILD_CLI AND NOT USE_SYSTEM_LIBAO)
     ExternalProject_Add (
         libao_external
         TIMEOUT 120
-        GIT_REPOSITORY "https://gitlab.xiph.org/xiph/libao.git"
+        GIT_REPOSITORY "https://github.com/xiph/libao.git"
         GIT_TAG cafce902a73c1050474a62feff83e428bbbee5f4
         PREFIX ${LIBAO_PREFIX}
 
@@ -220,14 +220,24 @@ endif ()
 if (USE_FAAD2)
     # use patched faad if installed
     if (INSTALLED_FAAD_IS_PATCHED)
-        pkg_search_module(FAAD2 faad2)
+        message(STATUS "Try using patched system-provided FAAD2 library")
+        pkg_search_module(PC_FAAD2 QUIET faad2)
+
+        find_path(FAAD2_INCLUDE_DIRS neaacdec.h
+                HINTS ${PC_FAAD2_INCLUDEDIR} ${PC_FAAD2_INCLUDE_DIRS})
+
+        # use the libfaad_hdc.a, not libfaad as specified in pkg-config file
+        find_library(FAAD2_LIBRARIES NAMES faad_hdc
+                HINTS ${PC_FAAD2_LIBDIR} ${PC_FAAD2_LIBRARY_DIRS} )
+
+        if (FAAD2_INCLUDE_DIRS AND FAAD2_LIBRARY)
+            set(FAAD2_FOUND ON)
+        else ()
+            message (WARNING "FAAD2 patched not found. Building from source.")
+        endif()
     endif()
 
-    if (INSTALLED_FAAD_IS_PATCHED AND FAAD2_FOUND)
-        message(STATUS "Using patched system-provided FAAD2 library")
-        set(FAAD2_LIBRARIES faad_hdc) # use the libfaad_hdc.a, not libfaad as specified in pkg-config file
-        add_definitions(-DHAVE_FAAD2)
-    else()
+    if (NOT FAAD2_FOUND)
         set (FAAD2_PREFIX "${CMAKE_BINARY_DIR}/faad2-prefix")
         ExternalProject_Add (
             faad2_external
@@ -254,8 +264,12 @@ if (USE_FAAD2)
 
         set (FAAD2_INCLUDE_DIRS "${FAAD2_PREFIX}/include")
         set (FAAD2_LIBRARIES faad2)
-        add_definitions (-DHAVE_FAAD2)
         set (FAAD2_BUILTIN faad2)
+        set (FAAD2_FOUND ON)
+    endif()
+
+    if (FAAD2_FOUND)
+        add_definitions (-DHAVE_FAAD2)
     endif()
 else ()
     # we only use libao with faad2

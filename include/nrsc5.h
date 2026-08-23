@@ -44,15 +44,20 @@
 #define NRSC5_MIME_TTN_STM_TRAFFIC  0xFF8422D7
 #define NRSC5_MIME_TTN_STM_WEATHER  0xEF042E96
 #define NRSC5_MIME_UNKNOWN_00000000 0x00000000
+#define NRSC5_MIME_UNKNOWN_1C7D0E29 0x1C7D0E29
 #define NRSC5_MIME_UNKNOWN_B81FFAA8 0xB81FFAA8
 #define NRSC5_MIME_UNKNOWN_FFFFFFFF 0xFFFFFFFF
 
 #define NRSC5_AUDIO_FRAME_SAMPLES  2048        /**< Number of audio samples per HDC frame */
 
-#define NRSC5_SAMPLE_RATE_CU8      1488375     /**< Sample rate at which nrsc5_pipe_samples_cu8() expects samples (FM or AM) */
-#define NRSC5_SAMPLE_RATE_CS16_FM  744187.5    /**< Sample rate at which nrsc5_pipe_samples_cs16() expects samples (FM only) */
-#define NRSC5_SAMPLE_RATE_CS16_AM  46511.71875 /**< Sample rate at which nrsc5_pipe_samples_cs16() expects samples (AM only) */
-#define NRSC5_SAMPLE_RATE_AUDIO    44100       /**< Sample rate of outgoing audio */
+#define NRSC5_SAMPLE_RATE_CU8      1488375            /**< Sample rate at which nrsc5_pipe_samples_cu8() expects samples (FM or AM) */
+#define NRSC5_SAMPLE_RATE_NATIVE_FM  744187.5         /**< Sample rate at which nrsc5_pipe_samples_cs16() & nrsc5_pipe_samples_cf32() expects samples (FM only) */
+#define NRSC5_SAMPLE_RATE_NATIVE_AM  46511.71875      /**< Sample rate at which nrsc5_pipe_samples_cs16() & nrsc5_pipe_samples_cf32() expects samples (AM only) */
+#define NRSC5_SAMPLE_RATE_CS16_FM  NRSC5_SAMPLE_RATE_NATIVE_FM    /**< DEPRECATED: use `NRSC5_SAMPLE_RATE_NATIVE_FM` instead */
+#define NRSC5_SAMPLE_RATE_CS16_AM  NRSC5_SAMPLE_RATE_NATIVE_AM      /**< DEPRECATED: use `NRSC5_SAMPLE_RATE_NATIVE_AM` instead */
+#define NRSC5_SAMPLE_RATE_AUDIO    44100              /**< Sample rate of outgoing audio */
+
+#define NRSC5_DEVICE_VERSION_LENGTH 4          /**< Length of Core Version & Manufacturer Version in SIS Parameter messages. */
 
 #ifdef NRSC5_EXPORTS
 #ifdef __MINGW32__
@@ -184,7 +189,11 @@ enum
     NRSC5_EVENT_HERE_IMAGE,
     NRSC5_EVENT_LOT_HEADER,
     NRSC5_EVENT_LOT_FRAGMENT,
-    NRSC5_EVENT_AGC
+    NRSC5_EVENT_AGC,
+    NRSC5_EVENT_EXCITER_INFO,
+    NRSC5_EVENT_IMPORTER_INFO,
+    NRSC5_EVENT_LEAP_SECOND_OFFSET,
+    NRSC5_EVENT_LOCAL_TIME,
 };
 
 enum
@@ -347,6 +356,12 @@ struct nrsc5_id3_comment_t {
  */
 typedef struct nrsc5_id3_comment_t nrsc5_id3_comment_t;
 
+enum
+{
+    NRSC5_PKT_FLAGS_NONE = 0,
+    NRSC5_PKT_FLAGS_CRC_ERROR = 1 << 0, /** Failed the CRC check. Could be corrupted packet. */
+};
+
 /**  Incoming event from receiver.
  *
  * This event structure is passed to your application supplied
@@ -384,6 +399,10 @@ struct nrsc5_event_t
  * - `NRSC5_EVENT_EMERGENCY_ALERT` : emergency alert, see `emergency_alert` member
  * - `NRSC5_EVENT_HERE_IMAGE` : HERE Images traffic/weather map, see `here_image` member
  * - `NRSC5_EVENT_AGC` : automatic gain control status, see `agc` member
+ * - `NRSC5_EVENT_EXCITER_INFO` : exciter data, see `exciter_info` member
+ * - `NRSC5_EVENT_IMPORTER_INFO` : importer data, see `importer_info` member
+ * - `NRSC5_EVENT_LEAP_SECOND_OFFSET` : leap second offset, see `leap_second_offset` member
+ * - `NRSC5_EVENT_LOCAL_TIME` : local time data, see `local_time` member
  */
     unsigned int event;
     union
@@ -395,18 +414,23 @@ struct nrsc5_event_t
         struct {
             float freq_offset; /**< Frequency offset in Hz */
             int psmi;          /**< Primary Service Mode Indicator (1, 2, 3, 5, 6, or 11 for FM; 1 or 2 for AM) */
+            int pli;           /**< Power Level Indicator (AM only; set to -1 for FM) */
+            int hppi;          /**< High-Power PIDS Indicator (AM only; set to -1 for FM) */
+            int aabi;          /**< Analog Audio Bandwidth Indicator (AM only; set to -1 for FM) */
+            int rdbi;          /**< Reduced Digital Bandwidth Indicator (AM only; set to -1 for FM) */
         } sync;
         struct {
             float cber;
         } ber;
         struct {
-            float lower;
-            float upper;
+            float lower;  /**< Modulation error ratio of the lower sideband in dB. Note that the NRSC-5 standard defines FM signals to be spectrally inverted, so the lower sideband is the one that is higher in frequency. AM signals are not inverted. */
+            float upper;  /**< Modulation error ratio of the upper sideband in dB. Note that the NRSC-5 standard defines FM signals to be spectrally inverted, so the upper sideband is the one that is lower in frequency. AM signals are not inverted. */
         } mer;
         struct {
             unsigned int program;
             const uint8_t *data;
             size_t count;
+            unsigned int flags; /** The specific status of the hdc packet. Example `NRSC5_PKT_FLAGS_CRC_ERROR` **/
         } hdc;
         struct {
             unsigned int program;
@@ -429,6 +453,15 @@ struct nrsc5_event_t
                 int lot;
             } xhdr;
             nrsc5_id3_comment_t *comments;
+            struct
+            {
+                char *price;            /** price of the product */
+                char *contact_url;      /** URL for contacting the seller */
+                char *seller;           /** Name of the seller */
+                char *description;      /** Short description of the product */
+                uint8_t received_as;    /** How audio is delivered when bought */
+                struct tm *valid_until; /** Date when the price expires. Note that only the `tm_year`, `tm_mon`, and `tm_mday` fields are set. */
+            } commercial;
         } id3;
         struct {
             uint16_t port;  /**< DEPRECATED: Use `component->data.port` instead */
@@ -561,6 +594,32 @@ struct nrsc5_event_t
             float peak_dbfs;     /**< peak signal amplitude in dB, relative to full scale */
             int is_final;        /**< 1 if this is the final (best) gain value, otherwise 0 */
         } agc;
+        struct {
+            const char *manufacturer_id;                           /**< Manufacturer ID, e.g. "GG" or "L7" */
+            int core_version[NRSC5_DEVICE_VERSION_LENGTH];         /**< Core Version number. */
+            int core_status;                                       /**< Core Version status. 0 (Commercial Release), 1 (Engineering Release), 2 (Patch). */
+            int manufacturer_version[NRSC5_DEVICE_VERSION_LENGTH]; /**< Manufacturer-assigned Version number. */
+            int manufacturer_status;                               /**< Manufacturer Version status. 0 (Commercial Release), 1 (Engineering Release), 2 (Patch). */
+            int importer_connected;                                /**< 1 if an importer is connected, otherwise 0. */
+        } exciter_info;
+        struct {
+            const char *manufacturer_id;                           /**< Manufacturer ID, e.g. "GG" or "L7" */
+            int core_version[NRSC5_DEVICE_VERSION_LENGTH];         /**< Core Version number. */
+            int core_status;                                       /**< Core Version status. 0 (Commercial Release), 1 (Engineering Release), 2 (Patch). */
+            int manufacturer_version[NRSC5_DEVICE_VERSION_LENGTH]; /**< Manufacturer-assigned Version number. */
+            int manufacturer_status;                               /**< Manufacturer Version status. 0 (Commercial Release), 1 (Engineering Release), 2 (Patch). */
+        } importer_info;
+        struct {
+            int pending_offset;           /**< Future GPS-UTC offset in seconds. Meant to be broadcasted months before the leap seconds and a few hours afterward. */
+            int current_offset;           /**< Current GPS-UTC offset in seconds. */
+            unsigned int pending_alfn;    /**< ALFN representing the GPS time of a pending leap second adjustment, or 0 if a leap second is not pending.*/
+        } leap_second_offset;
+        struct {
+            int utc_offset;    /**< Local Time Zone UTC Offset in minutes. */
+            int dst_regional;  /**< 1 if DST is currently in effect regionally, otherwise 0. */
+            int dst_local;     /**< 1 if DST is practiced locally, otherwise 0. */
+            int dst_schedule;  /**< DST Schedule. 0 means Daylight Saving Time is not practiced. 1 means U.S./Canada schedule. 2 means EU schedule. */
+        } local_time;
     };
 };
 /**
@@ -816,10 +875,32 @@ NRSC5_API int nrsc5_pipe_samples_cu8(nrsc5_t *st, const uint8_t *samples, unsign
  * @param[in] st  pointer to an `nrsc5_t` session object
  * @param[in] samples  pointer to an array 16-bit signed samples
  * @param[in] length   the number of samples in the array
- * @see NRSC5_SAMPLE_RATE_CS16_FM & NRSC5_SAMPLE_RATE_CS16_AM for required sample rate
+ * @see NRSC5_SAMPLE_RATE_NATIVE_FM & NRSC5_SAMPLE_RATE_NATIVE_AM for required sample rate
  * @return 0 on success, nonzero on error
  *
  */
 NRSC5_API int nrsc5_pipe_samples_cs16(nrsc5_t *st, const int16_t *samples, unsigned int length);
+
+/**
+ * Push an IQ input array of complex float samples into the demodulator.
+ *
+ * @param[in] st  pointer to an `nrsc5_t` session object
+ * @param[in] samples  pointer to an array of complex float samples
+ * @param[in] length   the number of samples in the array. Must be a multiple of two.
+ * @see NRSC5_SAMPLE_RATE_NATIVE_FM & NRSC5_SAMPLE_RATE_NATIVE_AM for required sample rate
+ * @return 0 on success, nonzero on error
+ *
+ */
+NRSC5_API int nrsc5_pipe_samples_cf32(nrsc5_t *st, const float *samples, unsigned int length);
+
+/**
+ * Resets the current session.
+ * Gain is reset if auto-gain is enabled
+ *
+ * @param[in] st  pointer to an `nrsc5_t` session object
+ * @return 0 on success, nonzero on error
+ *
+ */
+NRSC5_API int nrsc5_reset(nrsc5_t *st);
 
 #endif /* NRSC5_H_ */

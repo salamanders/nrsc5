@@ -26,8 +26,10 @@ class NRSC5CLI:
         self.wav_output = None
         self.raw_output = None
         self.hdc_output = None
+        self.audio_packets_valid = 0
         self.audio_packets = 0
         self.audio_bytes = 0
+        self.audio_errors = 0
         signal.signal(signal.SIGINT, self._signal_handler)
 
     def _signal_handler(self, sig, frame):
@@ -48,7 +50,7 @@ class NRSC5CLI:
         parser.add_argument("-p", metavar="ppm-error", type=int)
         parser.add_argument("-g", metavar="gain", type=float)
         input_group.add_argument("-r", metavar="iq-input")
-        parser.add_argument("--iq-input-format", choices=["cu8", "cs16"], default="cu8")
+        parser.add_argument("--iq-input-format", choices=["cu8", "cs16", "cf32"])
         parser.add_argument("-w", metavar="iq-output")
         parser.add_argument("-o", metavar="audio-output")
         parser.add_argument("-t", choices=["wav", "raw"], default="wav")
@@ -62,6 +64,14 @@ class NRSC5CLI:
 
         if self.args.frequency and self.args.frequency < 10000:
             self.args.frequency *= 1e6
+
+        if self.args.r and not self.args.iq_input_format:
+            if self.args.r.endswith(".cs16"):
+                self.args.iq_input_format = "cs16"
+            elif self.args.r.endswith(".cf32"):
+                self.args.iq_input_format = "cf32"
+            else:
+                self.args.iq_input_format = "cu8"
 
     def run(self):
         logging.basicConfig(level=self.args.l * 10,
@@ -129,6 +139,8 @@ class NRSC5CLI:
                         self.radio.pipe_samples_cu8(data)
                     elif self.args.iq_input_format == "cs16":
                         self.radio.pipe_samples_cs16(data)
+                    elif self.args.iq_input_format == "cf32":
+                        self.radio.pipe_samples_cf32(data)
             else:
                 with self.device_condition:
                     self.device_condition.wait()
@@ -195,6 +207,15 @@ class NRSC5CLI:
             0xfc
         ])
 
+    def format_am_flags(self, evt):
+        parts = [f'Digital bandwidth: {"reduced" if evt.rdbi else "full"}']
+        if not evt.rdbi:
+            if evt.psmi != 2:
+                parts.append(f'analog bandwidth: {"8 kHz" if evt.aabi else "5 kHz"}')
+                parts.append(f'secondary/tertiary power: {"high" if evt.pli else "low"}')
+            parts.append(f'PIDS power: {"high" if evt.hppi else "low"}')
+        return ", ".join(parts)
+
     def callback(self, evt_type, evt):
         if evt_type == nrsc5.EventType.LOST_DEVICE:
             logging.info("Lost device")
@@ -212,6 +233,8 @@ class NRSC5CLI:
             logging.info("Synchronized")
             logging.info("Frequency offset: %.0f Hz", evt.freq_offset)
             logging.info("Primary service mode: %d", evt.psmi)
+            if evt.pli != -1:
+                logging.info(self.format_am_flags(evt))
         elif evt_type == nrsc5.EventType.LOST_SYNC:
             logging.info("Lost synchronization")
         elif evt_type == nrsc5.EventType.MER:
@@ -226,11 +249,21 @@ class NRSC5CLI:
 
                 self.audio_packets += 1
                 self.audio_bytes += len(evt.data)
-                if self.audio_packets >= 32:
+                if evt.flags & nrsc5.PacketFlags.CRC_ERROR:
+                    self.audio_errors += 1
+                else:
+                    self.audio_packets_valid += 1
+
+                if self.audio_packets_valid >= 32:
                     logging.info("Audio bit rate: %.1f kbps", self.audio_bytes * 8 * nrsc5.SAMPLE_RATE_AUDIO
-                                 / nrsc5.AUDIO_FRAME_SAMPLES / self.audio_packets / 1000)
-                    self.audio_packets = 0
+                                 / nrsc5.AUDIO_FRAME_SAMPLES / self.audio_packets_valid / 1000)
+                    self.audio_packets_valid = 0
                     self.audio_bytes = 0
+                if self.audio_packets >= 32:
+                    if self.audio_errors > 0:
+                        logging.warning("Audio packet CRC mismatches: %d", self.audio_errors)
+                    self.audio_packets = 0
+                    self.audio_errors = 0
         elif evt_type == nrsc5.EventType.AUDIO:
             if evt.program == self.args.program:
                 if self.args.o:
@@ -242,7 +275,11 @@ class NRSC5CLI:
                     elif self.args.t == "raw":
                         self.raw_output.write(evt.data)
                 else:
-                    self.audio_queue.put(evt.data)
+                    blocking_audio_output = bool(self.args.r)
+                    try:
+                        self.audio_queue.put(evt.data, block=blocking_audio_output)
+                    except queue.Full:
+                        logging.warning("Audio output queue full, dropping samples")
         elif evt_type == nrsc5.EventType.ID3:
             if evt.program == self.args.program:
                 if evt.title:
@@ -260,6 +297,11 @@ class NRSC5CLI:
                 if evt.xhdr:
                     logging.info("XHDR: param=%s mime=%s lot=%s",
                                  evt.xhdr.param, evt.xhdr.mime.name, evt.xhdr.lot)
+                if evt.commercial:
+                    date_str = evt.commercial.valid_until.strftime("%Y-%m-%d")
+                    logging.info("Commercial: price=%s until=%s url=\"%s\" seller=\"%s\" desc=\"%s\" received_as=%d",
+                                 evt.commercial.price, date_str, evt.commercial.contact_url, evt.commercial.seller,
+                                 evt.commercial.description, evt.commercial.received_as)
         elif evt_type == nrsc5.EventType.SIG:
             for service in evt:
                 logging.info("SIG Service: type=%s number=%s name=%s",
@@ -349,6 +391,28 @@ class NRSC5CLI:
             logging.info("HERE Image: type=%s, seq=%d, n1=%d, n2=%d, time=%s, lat1=%.5f, lon1=%.5f, lat2=%.5f, lon2=%.5f, name=%s, size=%d",
                          evt.image_type.name, evt.seq, evt.n1, evt.n2, time_str, evt.latitude1, evt.longitude1,
                          evt.latitude2, evt.longitude2, evt.name, len(evt.data))
+        elif evt_type == nrsc5.EventType.EXCITER_INFO:
+            logging.debug("Exciter manuf. \"%s\", core version %d.%d.%d.%d, core status %d, manuf. version %d.%d.%d.%d, manuf. status %d, importer connected? %s",
+                          evt.manufacturer_id, evt.core_version[0], evt.core_version[1], evt.core_version[2],
+                          evt.core_version[3], evt.core_status,
+                          evt.manufacturer_version[0], evt.manufacturer_version[1], evt.manufacturer_version[2],
+                          evt.manufacturer_version[3], evt.manufacturer_status,
+                          "yes" if evt.importer_connected else "no")
+        elif evt_type == nrsc5.EventType.IMPORTER_INFO:
+            logging.debug("Importer manuf. \"%s\", core version %d.%d.%d.%d, core status %d, manuf. version %d.%d.%d.%d, manuf. status %d",
+                          evt.manufacturer_id, evt.core_version[0], evt.core_version[1], evt.core_version[2],
+                          evt.core_version[3], evt.core_status,
+                          evt.manufacturer_version[0], evt.manufacturer_version[1], evt.manufacturer_version[2],
+                          evt.manufacturer_version[3], evt.manufacturer_status)
+        elif evt_type == nrsc5.EventType.LEAP_SECOND_OFFSET:
+            logging.debug("Leap second offset: pending=%d, current=%d, ALFN of pending adjustment=%d",
+                          evt.pending_offset, evt.current_offset,
+                          evt.pending_alfn)
+        elif evt_type == nrsc5.EventType.LOCAL_TIME:
+            logging.debug("Local time: UTC offset=%d minutes, DST schedule=%d, DST in effect regionally? %s, DST practiced locally? %s",
+                          evt.utc_offset,
+                          evt.dst_schedule,
+                          "yes" if evt.dst_regional else "no", "yes" if evt.dst_local else "no")
 
 
 if __name__ == "__main__":

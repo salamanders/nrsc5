@@ -119,11 +119,11 @@ void acquire_process(acquire_t *st)
     }
     else
     {
-        cint16_t y;
+        float complex y;
         for (i = 0; i < st->fftcp * (ACQUIRE_SYMBOLS + 1); i++)
         {
-            fir_q15_execute((st->mode == NRSC5_MODE_FM) ? st->filter_fm : st->filter_am, &st->in_buffer[i], &y);
-            st->buffer[i] = (st->mode == NRSC5_MODE_FM) ? cq15_to_cf_conj(y) : cq15_to_cf(y);
+            fir_cf32_execute((st->mode == NRSC5_MODE_FM) ? st->filter_fm : st->filter_am, &st->in_buffer[i], &y);
+            st->buffer[i] = (st->mode == NRSC5_MODE_FM) ? conjf(y) : y;
         }
 
         memset(st->sums, 0, sizeof(float complex) * st->fftcp);
@@ -158,7 +158,7 @@ void acquire_process(acquire_t *st)
     }
 
     for (i = 0; i < st->fftcp * (ACQUIRE_SYMBOLS + 1); i++)
-        st->buffer[i] = (st->mode == NRSC5_MODE_FM) ? cq15_to_cf_conj(st->in_buffer[i]) : cq15_to_cf(st->in_buffer[i]);
+        st->buffer[i] = (st->mode == NRSC5_MODE_FM) ? conjf(st->in_buffer[i]) : st->in_buffer[i];
 
     sync_adjust(&st->input->sync, st->fftcp / 2 - samperr);
     angle -= 2 * M_PI * st->cfo;
@@ -258,7 +258,7 @@ void acquire_process(acquire_t *st)
 
     keep = st->fftcp + (st->fftcp / 2 - samperr) + st->keep_extra;
     st->keep_extra = 0;
-    memmove(&st->in_buffer[0], &st->in_buffer[st->idx - keep], sizeof(cint16_t) * keep);
+    memmove(&st->in_buffer[0], &st->in_buffer[st->idx - keep], sizeof(float complex) * keep);
     st->idx = keep;
 }
 
@@ -272,23 +272,25 @@ void acquire_cfo_adjust(acquire_t *st, int cfo)
     st->cfo += cfo;
 }
 
-unsigned int acquire_push(acquire_t *st, cint16_t *buf, unsigned int length)
+unsigned int acquire_push(acquire_t *st, const float complex *buf, const unsigned int length)
 {
-    unsigned int needed = st->fftcp - st->idx % st->fftcp;
+    const unsigned int size = st->fftcp * (ACQUIRE_SYMBOLS + 1);
+    const unsigned int needed = size - st->idx;
 
-    if (length < needed)
-        return 0;
+    unsigned int pushed = length;
+    if (pushed > needed)
+        pushed = needed;
 
-    memcpy(&st->in_buffer[st->idx], buf, sizeof(cint16_t) * needed);
-    st->idx += needed;
+    memcpy(&st->in_buffer[st->idx], buf, sizeof(float complex) * pushed);
+    st->idx += pushed;
 
-    return needed;
+    return pushed;
 }
 
 void acquire_reset(acquire_t *st)
 {
-    firdecim_q15_reset(st->filter_fm);
-    firdecim_q15_reset(st->filter_am);
+    firdecim_cf32_reset(st->filter_fm);
+    firdecim_cf32_reset(st->filter_am);
     st->idx = 0;
     st->prev_angle = 0;
     st->phase = 1;
@@ -307,10 +309,12 @@ void acquire_init(acquire_t *st, input_t *input)
 
     st->input = input;
 
-    st->filter_fm = firdecim_q15_create(filter_taps_fm, sizeof(filter_taps_fm) / sizeof(filter_taps_fm[0]));
-    st->filter_am = firdecim_q15_create(filter_taps_am, sizeof(filter_taps_am) / sizeof(filter_taps_am[0]));
+    st->filter_fm = firdecim_cf32_create(filter_taps_fm, sizeof(filter_taps_fm) / sizeof(filter_taps_fm[0]));
+    st->filter_am = firdecim_cf32_create(filter_taps_am, sizeof(filter_taps_am) / sizeof(filter_taps_am[0]));
 
     pthread_mutex_lock(&fftw_mutex);
+    st->fftin = fftwf_alloc_complex(FFT_FM);
+    st->fftout = fftwf_alloc_complex(FFT_FM);
     st->fft_plan_fm = fftwf_plan_dft_1d(FFT_FM, st->fftin, st->fftout, FFTW_FORWARD, FFTW_ESTIMATE);
     st->fft_plan_am = fftwf_plan_dft_1d(FFT_AM, st->fftin, st->fftout, FFTW_FORWARD, FFTW_ESTIMATE);
     pthread_mutex_unlock(&fftw_mutex);
@@ -364,11 +368,13 @@ void acquire_set_mode(acquire_t *st, int mode)
 
 void acquire_free(acquire_t *st)
 {
-    firdecim_q15_free(st->filter_fm);
-    firdecim_q15_free(st->filter_am);
+    firdecim_cf32_free(st->filter_fm);
+    firdecim_cf32_free(st->filter_am);
 
     pthread_mutex_lock(&fftw_mutex);
     fftwf_destroy_plan(st->fft_plan_fm);
     fftwf_destroy_plan(st->fft_plan_am);
+    fftwf_free(st->fftin);
+    fftwf_free(st->fftout);
     pthread_mutex_unlock(&fftw_mutex);
 }

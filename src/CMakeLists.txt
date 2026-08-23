@@ -44,7 +44,7 @@ set (LIBRARY_FILES
     rtltcp.c
     sync.c
 
-    firdecim_q15.c
+    firdecim_cf32.c
 
     conv_dec.c
 
@@ -116,6 +116,7 @@ endif ()
 
 install (
     TARGETS nrsc5 nrsc5_static
+    RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     PUBLIC_HEADER DESTINATION include

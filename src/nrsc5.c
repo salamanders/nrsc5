@@ -543,12 +543,20 @@ int nrsc5_set_frequency(nrsc5_t *st, float freq)
     if (st->rtltcp && rtltcp_set_center_freq(st->rtltcp, freq) != 0)
         return 1;
 
-    if (st->auto_gain)
-        st->gain = -1;
-    input_reset(&st->input);
-    output_reset(&st->output);
+    nrsc5_reset(st);
 
     st->freq = freq;
+    return 0;
+}
+
+NRSC5_API int nrsc5_reset(nrsc5_t *st) {
+    if (!st->stopped)
+        return 1;
+    if (st->auto_gain)
+        st->gain = -1;
+
+    input_reset(&st->input);
+    output_reset(&st->output);
     return 0;
 }
 
@@ -649,6 +657,17 @@ int nrsc5_pipe_samples_cs16(nrsc5_t *st, const int16_t *samples, unsigned int le
     return 0;
 }
 
+int nrsc5_pipe_samples_cf32(nrsc5_t *st, const float *samples, unsigned int length)
+{
+    if (length % 2 != 0)
+    {
+        return -1;
+    }
+
+    input_push_cf32(&st->input, samples, length);
+    return 0;
+}
+
 void nrsc5_report(nrsc5_t *st, const nrsc5_event_t *evt)
 {
     if (st->callback)
@@ -684,13 +703,17 @@ void nrsc5_report_iq(nrsc5_t *st, const void *data, size_t count)
     nrsc5_report(st, &evt);
 }
 
-void nrsc5_report_sync(nrsc5_t *st, float freq_offset, int psmi)
+void nrsc5_report_sync(nrsc5_t *st, float freq_offset, int psmi, int pli, int hppi, int aabi, int rdbi)
 {
     nrsc5_event_t evt;
 
     evt.event = NRSC5_EVENT_SYNC;
     evt.sync.freq_offset = freq_offset;
     evt.sync.psmi = psmi;
+    evt.sync.pli = pli;
+    evt.sync.hppi = hppi;
+    evt.sync.aabi = aabi;
+    evt.sync.rdbi = rdbi;
     nrsc5_report(st, &evt);
 }
 
@@ -702,14 +725,24 @@ void nrsc5_report_lost_sync(nrsc5_t *st)
     nrsc5_report(st, &evt);
 }
 
-void nrsc5_report_hdc(nrsc5_t *st, unsigned int program, const uint8_t *data, size_t count)
+void nrsc5_report_hdc(nrsc5_t *st, unsigned int program, const packet_t* pkt)
 {
     nrsc5_event_t evt;
 
     evt.event = NRSC5_EVENT_HDC;
     evt.hdc.program = program;
-    evt.hdc.data = data;
-    evt.hdc.count = count;
+    evt.hdc.data = NULL;
+    evt.hdc.count = 0;
+    evt.hdc.flags = NRSC5_PKT_FLAGS_NONE;
+
+    if (pkt->shape == PACKET_FULL)
+    {
+        evt.hdc.data = pkt->data;
+        evt.hdc.count = pkt->size;
+    }
+    if (pkt->flags & PACKET_FLAG_CRC_ERROR)
+        evt.hdc.flags |= NRSC5_PKT_FLAGS_CRC_ERROR;
+
     nrsc5_report(st, &evt);
 }
 
@@ -1071,6 +1104,73 @@ void nrsc5_report_emergency_alert(nrsc5_t *st, const char *message, const uint8_
     evt.emergency_alert.location_format = location_format;
     evt.emergency_alert.num_locations = num_locations;
     evt.emergency_alert.locations = locations;
+
+    nrsc5_report(st, &evt);
+}
+
+void nrsc5_report_exciter_info(nrsc5_t *st, const char* manufacturer_id,
+                               const int core_version[NRSC5_DEVICE_VERSION_LENGTH],
+                               const int manufacturer_version[NRSC5_DEVICE_VERSION_LENGTH],
+                               const int core_status, const int manufacturer_status,
+                               const int importer_connected)
+{
+    nrsc5_event_t evt;
+
+    evt.event = NRSC5_EVENT_EXCITER_INFO;
+
+    memcpy(evt.exciter_info.core_version, core_version, sizeof(int) * NRSC5_DEVICE_VERSION_LENGTH);
+    memcpy(evt.exciter_info.manufacturer_version, manufacturer_version, sizeof(int) * NRSC5_DEVICE_VERSION_LENGTH);
+
+    evt.exciter_info.manufacturer_id = manufacturer_id;
+    evt.exciter_info.core_status = core_status;
+    evt.exciter_info.manufacturer_status = manufacturer_status;
+    evt.exciter_info.importer_connected = importer_connected;
+
+    nrsc5_report(st, &evt);
+}
+
+void nrsc5_report_importer_info(nrsc5_t *st, const char* manufacturer_id,
+                                const int core_version[NRSC5_DEVICE_VERSION_LENGTH],
+                                const int manufacturer_version[NRSC5_DEVICE_VERSION_LENGTH],
+                                const int core_status, const int manufacturer_status)
+{
+    nrsc5_event_t evt;
+
+    evt.event = NRSC5_EVENT_IMPORTER_INFO;
+
+    memcpy(evt.importer_info.core_version, core_version, sizeof(int) * NRSC5_DEVICE_VERSION_LENGTH);
+    memcpy(evt.importer_info.manufacturer_version, manufacturer_version, sizeof(int) * NRSC5_DEVICE_VERSION_LENGTH);
+
+    evt.importer_info.manufacturer_id = manufacturer_id;
+    evt.importer_info.core_status = core_status;
+    evt.importer_info.manufacturer_status = manufacturer_status;
+
+    nrsc5_report(st, &evt);
+}
+
+void nrsc5_report_leap_second_offset(nrsc5_t *st, const int pending_offset, const int current_offset,
+                                     const unsigned int pending_alfn)
+{
+    nrsc5_event_t evt;
+
+    evt.event = NRSC5_EVENT_LEAP_SECOND_OFFSET;
+    evt.leap_second_offset.pending_offset = pending_offset;
+    evt.leap_second_offset.current_offset = current_offset;
+    evt.leap_second_offset.pending_alfn = pending_alfn;
+
+    nrsc5_report(st, &evt);
+}
+
+void nrsc5_report_local_time(nrsc5_t *st, const int tzo, const int dst_regional,
+                             const int dst_local, const int dst_schedule)
+{
+    nrsc5_event_t evt;
+
+    evt.event = NRSC5_EVENT_LOCAL_TIME;
+    evt.local_time.utc_offset = tzo;
+    evt.local_time.dst_regional = dst_regional;
+    evt.local_time.dst_local = dst_local;
+    evt.local_time.dst_schedule = dst_schedule;
 
     nrsc5_report(st, &evt);
 }
