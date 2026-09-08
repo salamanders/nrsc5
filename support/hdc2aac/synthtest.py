@@ -516,29 +516,38 @@ def gen_frame(codec, rng):
         cuts = sorted(rng.sample(range(1, max_sfb), min(nsec - 1, max_sfb - 1)))
         bounds = [0] + cuts + [max_sfb]
         sections = []
-        sf_bits_writer = Writer()
-        spec_bits_writer = Writer()
         for i in range(len(bounds) - 1):
             start, end = bounds[i], bounds[i + 1]
             cb = rng.choice(special_cbs) if rng.random() < 0.15 \
                 else rng.randrange(1, 12)
-            ln = end - start
-            assert ln < 31                  # keep away from escape coding
-            w.w(cb, 4)
-            w.w(ln, 5)
             sections.append([cb, start, end])
-            # scale factors
+
+        # 1. section_data
+        for cb, start, end in sections:
+            w.w(cb, 4)
+            rem_len = end - start
+            while rem_len >= 31:
+                w.w(31, 5)
+                rem_len -= 31
+            w.w(rem_len, 5)
+
+        # 2. scale_factor_data
+        noise_pcm_seen = False
+        for cb, start, end in sections:
             for _sfb in range(start, end):
                 if cb == ZERO_HCB:
-                    pass
+                    continue
                 elif cb == 13:              # first noise energy is pcm(9)
-                    if not any(x[0] == 13 for x in sections[:-1]):
+                    if not noise_pcm_seen:
+                        noise_pcm_seen = True
                         w.w(rng.getrandbits(9), 9)
                     else:
                         codec.write_codeword(w, rng, "sf")
                 else:
                     codec.write_codeword(w, rng, "sf")
-            # spectral data
+
+        # 3. spectral_data
+        for cb, start, end in sections:
             if cb in (ZERO_HCB, 13, 14, 15):
                 continue
             inc = 2 if cb >= FIRST_PAIR_HCB else 4
@@ -546,7 +555,6 @@ def gen_frame(codec, rng):
                 codec.write_codeword(w, rng, cb)
 
         chs_meta.append({"gg": gg, "sections": sections})
-        del sf_bits_writer, spec_bits_writer
 
     has_fil = rng.random() < 0.5
     if has_fil:
