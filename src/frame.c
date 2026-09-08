@@ -26,6 +26,22 @@
 #define PCI_AUDIO_FIXED 0xE3634C
 #define PCI_AUDIO_FIXED_OPP 0x8D8D33
 #define PCI_FIXED 0x3634CE
+#define PCI_RESERVED_CW5 0x8D338D
+#define PCI_RESERVED_CW6 0xD8D338
+#define PCI_RESERVED_CW7 0x634CE3
+#define PCI_MAX_ERRORS 4
+#define PCI_COUNT 8
+
+static const unsigned int PCI_POSSIBILITIES[PCI_COUNT] = {
+    PCI_AUDIO,
+    PCI_AUDIO_OPP,
+    PCI_AUDIO_FIXED,
+    PCI_AUDIO_FIXED_OPP,
+    PCI_FIXED,
+    PCI_RESERVED_CW5,
+    PCI_RESERVED_CW6,
+    PCI_RESERVED_CW7,
+};
 
 #define MAX_AUDIO_PACKETS 64
 
@@ -143,16 +159,19 @@ static uint16_t fcs16(const uint8_t *cp, int len)
     return (crc);
 }
 
-static int has_audio(frame_t *st)
+static int has_audio(unsigned int pci)
 {
-    return (st->pci & 0xFFFFFC) != (PCI_FIXED & 0xFFFFFC);
+    return pci == PCI_AUDIO
+           || pci == PCI_AUDIO_OPP
+           || pci == PCI_AUDIO_FIXED
+           || pci == PCI_AUDIO_FIXED_OPP;
 }
 
-static int has_fixed(frame_t *st)
+static int has_fixed(unsigned int pci)
 {
-    return (st->pci & 0xFFFFFC) == (PCI_AUDIO_FIXED & 0xFFFFFC)
-           || (st->pci & 0xFFFFFC) == (PCI_AUDIO_FIXED_OPP & 0xFFFFFC)
-           || (st->pci & 0xFFFFFC) == (PCI_FIXED & 0xFFFFFC);
+    return pci == PCI_AUDIO_FIXED
+           || pci == PCI_AUDIO_FIXED_OPP
+           || pci == PCI_FIXED;
 }
 
 static int fix_header(frame_t *st, uint8_t *buf)
@@ -513,15 +532,15 @@ static size_t process_fixed_data(frame_t *st, size_t length, logical_channel_t l
     return p - st->buffer;
 }
 
-void frame_process(frame_t *st, size_t length, logical_channel_t lc)
+void frame_process(frame_t *st, size_t length, logical_channel_t lc, unsigned int pci)
 {
     unsigned int offset = 0;
     unsigned int audio_end = length;
 
-    if (has_fixed(st))
+    if (has_fixed(pci))
         audio_end = process_fixed_data(st, length, lc);
 
-    if (!has_audio(st))
+    if (!has_audio(pci))
         return;
 
     while (offset < audio_end - RS_CODEWORD_LEN)
@@ -533,12 +552,7 @@ void frame_process(frame_t *st, size_t length, logical_channel_t lc)
         hef_t hef = {0};
 
         if (!fix_header(st, st->buffer + offset))
-        {
-            // go back to coarse sync if we fail to decode any audio packets in a P1 frame
-            if ((length == MAX_PDU_LEN || length == P1_PDU_LEN_AM) && offset == 0)
-                input_set_sync_state(st->input, SYNC_STATE_NONE);
             return;
-        }
 
         parse_header(st->buffer + offset, &hdr);
         offset += 14;
@@ -642,6 +656,27 @@ void frame_process(frame_t *st, size_t length, logical_channel_t lc)
 
 }
 
+static unsigned int pop_count(unsigned int n)
+{
+    int c = 0;
+    for (; n; ++c)
+        n &= n - 1;
+    return c;
+}
+
+static int fuzzy_pci(const unsigned int pci, const unsigned int pci_len, unsigned int* match)
+{
+    for (int i = 0; i < PCI_COUNT; i++)
+    {
+        const unsigned int score = pop_count((pci ^ PCI_POSSIBILITIES[i]) >> (24 - pci_len));
+        if (score <= PCI_MAX_ERRORS) {
+            *match = PCI_POSSIBILITIES[i];
+            return (int) score;
+        }
+    }
+    return -1;
+}
+
 void frame_push(frame_t *st, uint8_t *bits, size_t length, logical_channel_t lc)
 {
     unsigned int start, offset, pci_len;
@@ -709,8 +744,15 @@ void frame_push(frame_t *st, uint8_t *bits, size_t length, logical_channel_t lc)
         }
     }
 
-    st->pci = header;
-    frame_process(st, ptr - st->buffer, lc);
+    unsigned int pci;
+    if (fuzzy_pci(header, pci_len, &pci) < 0)
+    {
+        if (lc == P1_LOGICAL_CHANNEL)
+            input_set_sync_state(st->input, SYNC_STATE_NONE);
+        return;
+    }
+    
+    frame_process(st, ptr - st->buffer, lc, pci);
 }
 
 void frame_reset(frame_t *st)
@@ -726,7 +768,6 @@ void frame_reset(frame_t *st)
         st->services[prog].latency = -1;
         }
 
-    st->pci = 0;
     for (int prog = 0; prog < MAX_PROGRAMS; prog++)
     {
         st->psd_idx[prog] = -1;
