@@ -16,3 +16,13 @@ Session.vim
 
 # Auto-generated tag files
 tags
+
+# hdc2aac reference clone (local only)
+/_faadref/
+/_faadref_git.log
+support/hdc2aac/hdc2aac
+support/hdc2aac/hdc2aac.exe
+test_synth/
+_synth.log
+.clinerules
+
