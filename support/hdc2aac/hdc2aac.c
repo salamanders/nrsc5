@@ -477,7 +477,7 @@ static int parse_tns_hdc(bitreader_t *br, const ics_t *ics, tns_span_t *span,
     }
 
     for (w = 0; w < ics->num_windows; w++) {
-        int n_filt, coef_res_bits = 0, f;
+        int n_filt, coef_res = 0, f;
         if (ics->window_sequence != EIGHT_SHORT_SEQUENCE) {
             /* HDC: n_filt implicitly 1, no bits in stream */
             n_filt = 1;
@@ -486,8 +486,7 @@ static int parse_tns_hdc(bitreader_t *br, const ics_t *ics, tns_span_t *span,
             n_filt = (int)br_bits(br, n_filt_bits);
         }
         if (n_filt > 0) {
-            coef_res_bits = 1;          /* coef_res read once per window */
-            br_bit(br);                 /* coef_res (copied verbatim via span) */
+            coef_res = br_bit(br);      /* coef_res (copied verbatim via span) */
         }
 
         for (f = 0; f < n_filt; f++) {
@@ -498,7 +497,7 @@ static int parse_tns_hdc(bitreader_t *br, const ics_t *ics, tns_span_t *span,
                 int compress, coef_bits, j;
                 br_bit(br);                      /* direction */
                 compress = (int)br_bit(br);      /* coef compression */
-                coef_bits = 3 + coef_res_bits - compress;
+                coef_bits = 3 + coef_res - compress;
                 for (j = 0; j < order; j++)
                     br_bits(br, coef_bits);
             }
