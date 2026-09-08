@@ -279,7 +279,7 @@ def main():
         f.write(" *   leaf:          a = sign bits that follow the codeword,\n")
         f.write(" *                  b = escape sequences that follow (cb 11 only)\n")
         f.write(" */\n#ifndef HCB_TREES_H\n#define HCB_TREES_H\n\n")
-        f.write("typedef struct { signed char leaf, a, b; } hdc_hcb_node;\n\n")
+        f.write("typedef struct { short leaf, a, b; } hdc_hcb_node;\n\n")
         for name, nodes, nleaves in defs:
             f.write("/* %d codewords, max depth %d */\n"
                     "static const hdc_hcb_node %s[] = {\n"

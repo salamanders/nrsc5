@@ -10,7 +10,7 @@
 #ifndef HCB_TREES_H
 #define HCB_TREES_H
 
-typedef struct { signed char leaf, a, b; } hdc_hcb_node;
+typedef struct { short leaf, a, b; } hdc_hcb_node;
 
 /* 81 codewords, max depth 11 */
 static const hdc_hcb_node hdc_cb1[] = {
