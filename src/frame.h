@@ -42,7 +42,6 @@ typedef struct
     struct input_t *input;
     uint8_t buffer[MAX_PDU_LEN];
     audio_service_t services[MAX_PROGRAMS];
-    unsigned int pci;
     unsigned int program;
     uint8_t psd_buf[MAX_PROGRAMS][MAX_AAS_LEN];
     int psd_idx[MAX_PROGRAMS];
