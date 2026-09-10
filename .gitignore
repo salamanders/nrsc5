@@ -24,5 +24,13 @@ support/hdc2aac/hdc2aac
 support/hdc2aac/hdc2aac.exe
 test_synth/
 _synth.log
+# Recordings and test captures
+/recordings/
+/test_recordings/
+support/*.cu8
+support/*.hdc
+support/*.wav
+support/*.aac
+support/sample
+support/compare_wav.py
 .clinerules
-

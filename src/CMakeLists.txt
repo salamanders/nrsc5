@@ -23,6 +23,7 @@ include_directories (
     ${FFTW3F_INCLUDE_DIRS}
     "${CMAKE_CURRENT_BINARY_DIR}"
     "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/support/hdc2aac"
 )
 link_directories (
     ${FAAD2_LIBRARY_DIRS}
@@ -98,6 +99,8 @@ if (BUILD_CLI)
         app
         main.c
         log.c
+        hdc2aac_remux.c
+        recorder.c
     )
     set_property (TARGET app PROPERTY OUTPUT_NAME nrsc5)
     set_target_properties(app PROPERTIES LINK_FLAGS "${STATIC_LINKER_FLAGS}")
@@ -108,8 +111,12 @@ if (BUILD_CLI)
         ${THREAD_LIBRARY}
         ${SOCKET_LIBRARY}
     )
+    add_executable (
+        hdc2aac
+        "${CMAKE_SOURCE_DIR}/support/hdc2aac/hdc2aac.c"
+    )
     install (
-            TARGETS app
+            TARGETS app hdc2aac
             RUNTIME DESTINATION bin
     )
 endif ()

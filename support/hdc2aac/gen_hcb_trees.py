@@ -252,19 +252,20 @@ def main():
         defs.append(build("hdc_cb%d" % cb,
                           enum_two_step(root, second, cb == 4, 4)))
 
-    # codebook 3: binary search, unsigned quads
+    # codebook 3: binary search, quads with sign bits (unsigned in table)
     t3 = parse_array(texts[3], "hcb3")
-    defs.append(build("hdc_cb3", enum_binary(t3, 4, False)))
+    defs.append(build("hdc_cb3", enum_binary(t3, 4, True)))
 
-    # pairs: 6,8,10,11 two-step signed; 5,7,9 binary signed
+    # pairs: 6 signed in table (no sign bits); 8,10,11 unsigned in table (has sign bits)
     for cb in (6, 8, 10, 11):
         root = parse_array(texts[cb], "hcb%d_1" % cb)
         second = parse_array(texts[cb], "hcb%d_2" % cb)
         defs.append(build("hdc_cb%d" % cb,
-                          enum_two_step(root, second, True, 2)))
+                          enum_two_step(root, second, cb != 6, 2)))
+    # pairs: 5 signed in table (no sign bits); 7,9 unsigned in table (has sign bits)
     for cb in (5, 7, 9):
         tbl = parse_array(texts[cb], "hcb%d" % cb)
-        defs.append(build("hdc_cb%d" % cb, enum_binary(tbl, 2, True)))
+        defs.append(build("hdc_cb%d" % cb, enum_binary(tbl, 2, cb != 5)))
 
     sf = parse_array(texts["sf"], "hcb_sf")
     defs.append(build("hdc_cb_sf", enum_sf(sf)))

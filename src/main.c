@@ -38,8 +38,10 @@
 #include <poll.h>
 #endif
 
+#include <signal.h>
 #include "bitwriter.h"
 #include "log.h"
+#include "recorder.h"
 
 #define AUDIO_BUFFERS 16
 #define AUDIO_DATA_LENGTH 8192
@@ -74,6 +76,10 @@ typedef struct {
     FILE *iq_file;
     char *aas_files_path;
     enum iq_format iq_input_format;
+    char *record_songs_path;
+    double split_delay;
+    int record_initial;
+    song_recorder_t *recorder;
 
     audio_buffer_t *head, *tail, *free;
     pthread_mutex_t mutex;
@@ -85,6 +91,7 @@ typedef struct {
     unsigned int audio_bytes;
     unsigned int audio_errors;
     int done;
+    int interrupted;
 } state_t;
 
 static ao_sample_format sample_format = {
@@ -128,7 +135,7 @@ static void push_audio_buffer(state_t *st, unsigned int program, const int16_t *
     audio_buffer_t *b;
 
     pthread_mutex_lock(&st->mutex);
-    if (program != st->program)
+    if (st->dev == NULL || program != st->program)
         goto unlock;
 
     if (flags & NRSC5_AUDIO_FLAGS_DECODING_ERROR)
@@ -345,6 +352,9 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
     case NRSC5_EVENT_HDC:
         if (evt->hdc.program == st->program)
         {
+            if (st->recorder)
+                recorder_on_hdc(st->recorder, evt->hdc.program, evt->hdc.data, evt->hdc.count, evt->hdc.flags);
+
             if (st->hdc_file)
                 dump_hdc(st->hdc_file, evt->hdc.data, evt->hdc.count);
 
@@ -402,6 +412,10 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
     case NRSC5_EVENT_ID3:
         if (evt->id3.program == st->program)
         {
+            if (st->recorder)
+                recorder_on_id3(st->recorder, evt->id3.program, evt->id3.title, evt->id3.artist,
+                                evt->id3.album, (evt->id3.xhdr.param >= 0 ? evt->id3.xhdr.lot : -1));
+
             if (evt->id3.title)
                 log_info("Title: %s", evt->id3.title);
             if (evt->id3.artist)
@@ -453,6 +467,8 @@ static void callback(const nrsc5_event_t *evt, void *opaque)
         log_debug("Packet data: port=%04X seq=%04X mime=%08X size=%d", evt->packet.component->data.port, evt->packet.seq, evt->packet.component->data.mime, evt->packet.size);
         break;
     case NRSC5_EVENT_LOT:
+        if (st->recorder)
+            recorder_on_lot(st->recorder, evt->lot.lot, NULL, evt->lot.name, evt->lot.data, evt->lot.size);
         if (st->aas_files_path)
             dump_aas_file(st, evt);
         strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%SZ", evt->lot.expiry_utc);
@@ -677,7 +693,8 @@ static void *audio_main(void *arg)
             st->tail = NULL;
         pthread_mutex_unlock(&st->mutex);
 
-        ao_play(st->dev, b->data, sizeof(b->data));
+        if (st->dev)
+            ao_play(st->dev, b->data, sizeof(b->data));
 
         pthread_mutex_lock(&st->mutex);
         // add to free list
@@ -802,7 +819,7 @@ static void *input_main(void *arg)
 
 static void help(const char *progname)
 {
-    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [--iq-input-format {cu8,cs16}] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--dump-aas-files directory] frequency program\n", progname);
+    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [--iq-input-format {cu8,cs16}] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--dump-aas-files directory] [--record-songs directory] [--split-delay seconds] frequency program\n", progname);
 }
 
 static int ends_with(const char *str, const char *suffix)
@@ -819,6 +836,9 @@ static int parse_args(state_t *st, int argc, char *argv[])
         { "dump-hdc", required_argument, NULL, 2 },
         { "am", no_argument, NULL, 3 },
         { "iq-input-format", required_argument, NULL, 4 },
+        { "record-songs", required_argument, NULL, 5 },
+        { "split-delay", required_argument, NULL, 6 },
+        { "record-initial", no_argument, NULL, 7 },
         { 0 }
     };
     const char *version = NULL;
@@ -833,6 +853,8 @@ static int parse_args(state_t *st, int argc, char *argv[])
     st->direct_sampling = -1;
     st->ppm_error = INT_MIN;
     st->iq_input_format = IQ_FORMAT_NONE;
+    st->split_delay = 0.0;
+    st->record_initial = 0;
     log_set_level(LOG_INFO);
 
     while ((opt = getopt_long(argc, argv, "r:w:o:t:d:p:g:ql:vH:TD:", long_opts, NULL)) != -1)
@@ -866,6 +888,15 @@ static int parse_args(state_t *st, int argc, char *argv[])
                 log_fatal("I/Q input format must be either cu8, cs16 or cf32.");
                 return -1;
             }
+            break;
+        case 5:
+            st->record_songs_path = strdup(optarg);
+            break;
+        case 6:
+            st->split_delay = strtod(optarg, NULL);
+            break;
+        case 7:
+            st->record_initial = 1;
             break;
         case 'r':
             st->input_name = strdup(optarg);
@@ -962,10 +993,10 @@ static int parse_args(state_t *st, int argc, char *argv[])
 
     if (audio_name)
         st->dev = open_ao_file(audio_name, audio_type);
-    else
+    else if (!st->record_songs_path)
         st->dev = open_ao_live();
 
-    if (st->dev == NULL)
+    if (st->dev == NULL && !st->record_songs_path)
     {
         log_fatal("Unable to open audio device.");
         return 1;
@@ -1024,11 +1055,30 @@ static void cleanup(state_t *st)
     if (st->iq_file)
         fclose(st->iq_file);
 
+    if (st->recorder)
+    {
+        recorder_destroy(st->recorder, !st->interrupted);
+        st->recorder = NULL;
+    }
+    free(st->record_songs_path);
+
     free(st->input_name);
     free(st->aas_files_path);
 
     if (st->dev)
         ao_close(st->dev);
+}
+
+static state_t *global_st = NULL;
+
+static void sigint_handler(int sig)
+{
+    (void)sig;
+    if (global_st)
+    {
+        global_st->interrupted = 1;
+        done_signal(global_st);
+    }
 }
 
 int main(int argc, char *argv[])
@@ -1119,6 +1169,17 @@ int main(int argc, char *argv[])
         nrsc5_set_gain(radio, st->gain);
     nrsc5_set_callback(radio, callback, st);
     nrsc5_start(radio);
+
+    global_st = st;
+    signal(SIGINT, sigint_handler);
+    signal(SIGTERM, sigint_handler);
+
+    if (st->record_songs_path)
+    {
+        if (st->record_initial)
+            setenv("NRSC5_RECORD_INITIAL", "1", 1);
+        st->recorder = recorder_create(st->record_songs_path, st->split_delay, st->program);
+    }
 
     pthread_create(&audio_thread, NULL, audio_main, st);
     pthread_create(&input_thread, NULL, input_main, st);

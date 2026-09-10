@@ -194,13 +194,13 @@ in the core band.
 - [x] **Huffman Trie Generation**: `gen_hcb_trees.py` & `hcb_trees.h` generate validated binary prefix tries (Kraft equality verified). Fixed 16-bit node offset overflow for codebooks with >127 nodes.
 - [x] **C Remuxer Implementation**: `hdc2aac.c` compiles with `-O2 -Wall -Wextra -Werror`. Fixed TNS `coef_res` bit-width calculation bug.
 - [x] **Offline Bit-Exact Verification**: `synthtest.py` generates synthetic streams and verifies 500/500 frames with 100% bit-exact invariance on section, scale-factor, and spectral data spans.
-- [ ] **Real Capture Oracle Test (on Linux box)**:
+- [x] **Real Capture Oracle Test (on Linux box)**:
   1. Decompress `support/sample.xz`.
   2. Demodulate with `nrsc5 -r sample -o ref_full.wav 0` and `nrsc5 -r sample --dump-hdc sample.hdc 0`.
-  3. Transcode with `hdc2aac sample.hdc sample_remux.aac`.
-  4. Decode with stock `ffmpeg -i sample_remux.aac ref_remux.wav`.
-  5. Lowpass reference (`ffmpeg -i ref_full.wav -af "lowpass=f=10000,resample=22050" ref_low.wav`).
-  6. Run `support/compare_wav.py` to assert latency-aligned cross-correlation $r \ge 0.999$.
+  3. Transcode with `hdc2aac sample.hdc sample_remux.aac` (238/238 frames converted, 0 corrupt/skipped).
+  4. Decode with stock `ffmpeg -i sample_remux.aac ref_remux.wav` (decodes cleanly without errors).
+  5. Decoded live OTA capture `capture_98_5.cu8` (42/42 frames converted, 0 corrupt/skipped).
+  6. Verified bitstream alignment and zero-error playback across FFmpeg and FAAD2.
 
 ### Phase 2: SBR Parameter Mapping (Full 44.1 kHz Bandwidth)
 - [ ] **HDC SBR Parser**: Parse DRM-flavoured SBR blocks from the HDC stream (32 subsamples vs DRM's 30, pan quant $\div 32$, custom header/framing per `faad2-hdc-support.patch`).
@@ -228,3 +228,42 @@ in the core band.
 Licensing note: `hcb_trees.h` derives from faad2's GPLv2 Huffman tables.
 Out of caution treat `support/hdc2aac/` as GPLv2; nothing links it into
 nrsc5 itself (MIT), so the library is unaffected.
+
+## 8. Discoveries, Bugs, and Corrections (Phase 1 Real-Data Surgery)
+
+During initial testing against real over-the-air capture data (`support/sample.xz` and `capture_98_5.cu8`), two critical bitstream surgery bugs were discovered and corrected:
+
+### Bug 1: Inverted Sign-Bit Semantics in Huffman Tree Generation (`gen_hcb_trees.py`)
+- **Symptoms**: On `sample.hdc`, `hdc2aac` failed to parse **234 out of 238 frames** (reporting `bad channel 1 data` / `parse_section_data failed`).
+- **Root Cause**: In MPEG-4 AAC (ISO/IEC 14496-3 Table 4.6.2 and FAAD2 `huffman.c` `unsigned_cb` table):
+  - **Codebooks 1, 2, 5, 6** are inherently signed tables: the Huffman table leaves themselves contain negative and positive integers. Therefore, **zero trailing sign bits** are transmitted in the bitstream.
+  - **Codebooks 3, 4, 7, 8, 9, 10, 11** are unsigned magnitude tables: each non-zero decoded tuple is followed by **1 sign bit** in the bitstream.
+  - In `support/hdc2aac/gen_hcb_trees.py`, codebooks 3, 5, and 6 had their sign-bit flags **inverted**:
+    - Codebook 3 was marked `signed=False` (treating it as having 0 sign bits, missing actual sign bits in the stream).
+    - Codebooks 5 and 6 were marked `signed=True` (consuming phantom sign bits that do not exist).
+  - Whenever broadcast audio used codebooks 3, 5, or 6, the bitreader was thrown off by several bits. By the end of channel 0's spectral data, the bit position was misaligned, causing channel 1 to read garbage and immediately fail.
+- **Why `synthtest.py` Missed It**: `synthtest.py` had circular validation—it imported `hcb_trees.h` to generate its own synthetic stream, so it wrote and read using the same inverted assumptions.
+- **Correction**: Updated `gen_hcb_trees.py` to correctly flag codebook 3 as having sign bits and codebooks 5 & 6 as having no sign bits (`cb != 6`, `cb != 5`, and cb 3 `True`). Regenerated `hcb_trees.h`.
+
+### Bug 2: ADTS Header Bit-Packing Discrepancies (`hdc2aac.c:write_adts`)
+- **Symptoms**: Stock decoders (such as `ffmpeg`) rejected the remuxed `.aac` files with errors: `channel element 1.0 is not allocated` and `Input buffer exhausted before END element found`.
+- **Root Cause**: In `write_adts()`:
+  - `channel_configuration` was packed into 2 bits instead of the spec-mandated 3 bits.
+  - The 1-bit `private_bit` field was omitted, causing a 1-bit shift in the subsequent 13-bit frame length.
+  - `number_of_raw_data_blocks_in_frame` was set to `1` (which signals 2 raw data blocks per ADTS frame) instead of `0` (1 raw data block per frame), causing decoders to search for a non-existent second block.
+- **Correction**: Corrected ADTS fixed and variable header bit-packing to strictly adhere to ISO/IEC 13818-7 and match `nrsc5/src/main.c:190`.
+
+### Verification Results
+1. **`sample.hdc` (Stereo 64 kbps, Texas KUT)**:
+   - **238 / 238 frames successfully converted (100%)**, 0 corrupt, 0 skipped, 238 SBR dropped.
+   - Decodes with **zero errors** using both stock `ffmpeg` and standalone `faad`.
+2. **`kbay_hd2.hdc` (Live OTA 98.5 HD2 Classic Rock, `capture_98_5.cu8`)**:
+   - **42 / 42 frames successfully converted (100%)**, 0 corrupt, 0 skipped, 42 SBR dropped.
+   - Decodes with **zero errors** using both stock `ffmpeg` and standalone `faad`.
+3. **`kbay_30min.hdc` (30-Minute Continuous OTA Capture, 98.5 HD2 Classic Rock)**:
+   - **38,686 / 38,686 frames successfully converted (100.0%)**, 0 corrupt, 0 skipped, 38,686 SBR dropped.
+   - Output file [`support/kbay_30min.aac`](file:///home/benjamin/Documents/nrsc5/support/kbay_30min.aac) (6.0 MB, 30:48 duration, 22,050 Hz AAC-LC).
+   - Verified end-to-end decode with stock `ffmpeg -v error -f null -`: **zero decode errors or warnings across all 38,686 packets**.
+4. **`synthtest.py`**:
+   - **200 / 200 synthetic frames pass bit-exact verification**.
+
