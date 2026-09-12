@@ -2,7 +2,7 @@
 
 This program receives NRSC-5 digital radio stations using an RTL-SDR dongle, or by reading from I/Q files. It offers a command-line interface as well as an API upon which other applications can be built. Before using it, you'll first need to compile the program using the build instructions below.
 
-## Quick Start: Continuous Song Recording & Pirate Server
+## Quick Start: Continuous Song Recording & Maker Faire Audio Hat Server
 
 ### 1. Continual Song Recording
 To continuously record songs into tagged `.m4a` files with embedded album art:
@@ -17,7 +17,7 @@ nrsc5 --record-songs ./recordings 107.1 0
 #   --record-initial         (record whatever is playing immediately upon startup)
 ```
 
-### 2. Pirate Web Server (Single-Serving Plunder Server)
+### 2. Maker Faire Audio Hat Web Server (Single-Serving Plunder Server)
 To serve the recordings to visitors connecting to your hat's local Wi-Fi:
 
 ```bash

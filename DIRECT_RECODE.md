@@ -267,3 +267,72 @@ During initial testing against real over-the-air capture data (`support/sample.x
 4. **`synthtest.py`**:
    - **200 / 200 synthetic frames pass bit-exact verification**.
 
+---
+
+## 9. Live Continuous Stream Recorder & M4A Packaging (`src/recorder.c`)
+
+### Architecture
+- Integrated directly into `nrsc5` via `--record-songs <dir> [freq] [program]`.
+- Receives live HDC frames (`recorder_on_hdc`) and ID3 metadata (`recorder_on_id3`) + LOT cover art (`recorder_on_lot`).
+- Remuxes HDC frames on-the-fly to ADTS AAC using `hdc2aac_remux_frame()`.
+- On song transition, stages in-memory cover art and invokes:
+  `ffmpeg -y -v error -i <aac> -i <art> -c copy -metadata title=... -metadata artist=... -disposition:v:0 attached_pic <final.m4a>`
+- Replaces special characters and resolves duplicate filename collisions cleanly (`Artist/Title.m4a`, `Artist/Title_001.m4a`).
+
+### Pre-Roll Ring Buffer (Song Intro Preservation)
+- **Problem**: Commercial radio automation computers update ID3 metadata **1.2 to 2.5 seconds after** the audio has already started playing on air. Previously, files were missing their first measure (e.g. acoustic guitar strumming, drum pickups).
+- **Solution**: A rolling circular buffer of 128 frames (`preroll_frame_t`) maintains the last ~2.5 seconds of audio (~54 ADTS frames @ 46.44ms/frame).
+- When a new song starts, all buffered pre-roll frames are flushed into the new file *before* live frames arrive.
+- Configurable via `--preroll <seconds>` (default: `2.5`) and `NRSC5_RECORDER_PREROLL` environment variable.
+
+---
+
+## 10. Pending Roadmap: Song End Trimming & Station Promo Cutoff
+
+### Empirical Observations from Audio Listening (via AGY CLI `view_file`)
+Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mind`, `Steve Miller Band - The Joker`, `Green Day - Good Riddance`) revealed the exact end-of-song anatomy on commercial HD Radio:
+1. **Song Finish**: Song plays its final chord or fades out.
+2. **Post-Song Gap**: A brief dip/silence lasting ~0.3s to 1.0s.
+3. **Station Sweeper / Promo**: The station plays a 4–8 second voiceover bumper (*"The South Bay's Rock Station. 98.5 KFOX!"* or *"Download the 98.5 KFOX app..."*).
+4. **Song B Intro**: The next song begins playing for ~1.5 to 2.5 seconds.
+5. **ID3 Tag Update**: The station's automation finally updates ID3 metadata, which triggers the recorder split.
+
+### Problems at Track Tail
+- Because the split triggers at (5), the tail of Song A currently contains:
+  1. The station promo/jingle (3).
+  2. The opening 1.5–2.5s of Song B (4).
+
+### Proposed End-Trimming Strategies (For Next Session on Pi)
+1. **Immediate Easy Win (Rollback by Pre-Roll Duration)**:
+   - Since Song B now recovers its first ~2.5s via the pre-roll buffer, Song A's file *should not also keep* those 2.5s of Song B at its tail!
+   - When finalizing Song A, trim off the last `preroll_capacity` frames (or rewind the file/stream before closing). This cleanly eliminates Song B's intro from Song A.
+2. **Silence / Energy Drop Detection in Final 15 Seconds**:
+   - In the last 10–15 seconds before the ID3 split, analyze the audio energy level.
+   - Look for the silence gap (drop below e.g. -35 dB for $\ge$ 400ms) that occurs between the end of the song and the station promo voiceover.
+   - Cut Song A at the onset of that silence gap.
+3. **Implementation Considerations**:
+   - Because `recorder.c` remuxes directly to ADTS without full PCM decoding, energy detection can be done either:
+     a) By inspecting AAC scale factors / global gain in the frame parser, OR
+     b) Post-process during the `ffmpeg` packaging step using `-af silencedetect=n=-35dB:d=0.4` or an audio filter pass.
+
+---
+
+## 11. Maker Faire Audio Hat Web Server (`pirate_server/`)
+
+### Design & Mechanics
+- **Physical Context**: Embedded inside a Maker Faire Audio Hat running on a Raspberry Pi with an RTL-SDR dongle disguised as a feather.
+- **Access Flow**: Visitors connect to the offline Wi-Fi AP (`PirateHat`, no password) $\rightarrow$ browse to `http://192.168.4.1`.
+- **Pages**:
+  - `/` ("ARE YE FRIEND OR BE YE FOE?").
+  - `/foe` ("Walk the plank" with repentance button).
+  - `/chest` (Song list with live search, confirmation modal).
+  - `/download?file=...` (Streams `.m4a` to browser, deletes file from disk immediately via `os.unlink()`, sets 10-min cookie `plundered=1`).
+  - `/farewell` (Explains download location, tells visitor to disconnect Wi-Fi and sail the high seas for 10 minutes before plundering again).
+- **Design Aesthetic**: Tactile, rustic styling featuring a repeating parchment map with sea monsters (`map_bg.jpg`), tricorn hat illustration (`pirate_hat.svg`), clean cards, no emojis, no AI design tropes.
+
+### Pi Deployment Checklist
+- Run on port 80: `sudo PIRATE_PORT=80 python3 pirate_server/server.py`
+- Auto-start on boot via systemd service or `rc.local` for both `nrsc5` and `server.py`.
+- Generate/print badge: `python3 pirate_server/generate_qr.py` $\rightarrow$ `pirate_badge.html`.
+
+
