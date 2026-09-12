@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
 
@@ -95,21 +96,29 @@ static void sanitize_filename(char *dst, const char *src, size_t maxlen)
         return;
     }
 
-    /* Trim leading whitespace */
-    while (*src == ' ' || *src == '\t') src++;
+    /* Trim leading whitespace and separators */
+    while (*src == ' ' || *src == '\t' || *src == '_' || *src == '.') src++;
 
     while (*src && d + 1 < maxlen) {
         unsigned char c = (unsigned char)*src++;
-        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
-            c == '"' || c == '<' || c == '>' || c == '|' || c < 32) {
-            dst[d++] = '_';
-        } else {
+        /* Allow only alphanumeric and hyphens as-is; convert spaces, quotes, and all special characters to underscore */
+        int is_safe = ((c >= 'a' && c <= 'z') ||
+                       (c >= 'A' && c <= 'Z') ||
+                       (c >= '0' && c <= '9') ||
+                       c == '-');
+
+        if (is_safe) {
             dst[d++] = (char)c;
+        } else {
+            /* Avoid consecutive underscores */
+            if (d > 0 && dst[d - 1] != '_') {
+                dst[d++] = '_';
+            }
         }
     }
 
-    /* Trim trailing spaces and dots */
-    while (d > 0 && (dst[d - 1] == ' ' || dst[d - 1] == '.' || dst[d - 1] == '\t'))
+    /* Trim trailing underscores, spaces and dots */
+    while (d > 0 && (dst[d - 1] == ' ' || dst[d - 1] == '.' || dst[d - 1] == '\t' || dst[d - 1] == '_'))
         d--;
     dst[d] = '\0';
 
@@ -120,145 +129,27 @@ static void sanitize_filename(char *dst, const char *src, size_t maxlen)
 }
 
 /* ------------------------------------------------------------------ */
-/* ID3v2.3 Tag Header Injection for .aac files                        */
+/* Collision Resolution: [song].m4a -> [song]_001.m4a                 */
 
-static void write_id3v2_tag(FILE *fp, const char *title, const char *artist,
-                            const char *album, const uint8_t *art_data,
-                            size_t art_size, const char *art_ext)
-{
-    size_t tlen = (title && title[0]) ? strlen(title) : 0;
-    size_t alen = (artist && artist[0]) ? strlen(artist) : 0;
-    size_t blen = (album && album[0]) ? strlen(album) : 0;
-
-    size_t tit2_size = 0;
-    size_t tpe1_size = 0;
-    size_t talb_size = 0;
-    size_t apic_size = 0;
-
-    const char *mime = "image/jpeg";
-    if (art_ext && strcmp(art_ext, ".png") == 0) {
-        mime = "image/png";
-    }
-    size_t mime_len = strlen(mime);
-
-    size_t total_payload = 0;
-
-    if (tlen > 0) {
-        tit2_size = 1 + tlen;
-        total_payload += 10 + tit2_size;
-    }
-    if (alen > 0) {
-        tpe1_size = 1 + alen;
-        total_payload += 10 + tpe1_size;
-    }
-    if (blen > 0) {
-        talb_size = 1 + blen;
-        total_payload += 10 + talb_size;
-    }
-    if (art_data && art_size > 0) {
-        /* encoding(1) + mime(mime_len + 1) + pic_type(1) + desc_null(1) + art_size */
-        apic_size = 1 + (mime_len + 1) + 1 + 1 + art_size;
-        total_payload += 10 + apic_size;
-    }
-
-    if (total_payload == 0)
-        return;
-
-    /* ID3v2 10-byte header */
-    uint8_t hdr[10];
-    hdr[0] = 'I'; hdr[1] = 'D'; hdr[2] = '3';
-    hdr[3] = 3;   /* version 2.3 */
-    hdr[4] = 0;   /* revision */
-    hdr[5] = 0;   /* flags */
-    hdr[6] = (uint8_t)((total_payload >> 21) & 0x7F);
-    hdr[7] = (uint8_t)((total_payload >> 14) & 0x7F);
-    hdr[8] = (uint8_t)((total_payload >> 7) & 0x7F);
-    hdr[9] = (uint8_t)(total_payload & 0x7F);
-    fwrite(hdr, 1, 10, fp);
-
-    uint8_t fhdr[10];
-
-    /* TIT2 (Title) frame */
-    if (tit2_size > 0) {
-        memcpy(fhdr, "TIT2", 4);
-        fhdr[4] = (uint8_t)((tit2_size >> 24) & 0xFF);
-        fhdr[5] = (uint8_t)((tit2_size >> 16) & 0xFF);
-        fhdr[6] = (uint8_t)((tit2_size >> 8) & 0xFF);
-        fhdr[7] = (uint8_t)(tit2_size & 0xFF);
-        fhdr[8] = 0; fhdr[9] = 0;
-        fwrite(fhdr, 1, 10, fp);
-        fputc(0, fp);
-        fwrite(title, 1, tlen, fp);
-    }
-
-    /* TPE1 (Artist) frame */
-    if (tpe1_size > 0) {
-        memcpy(fhdr, "TPE1", 4);
-        fhdr[4] = (uint8_t)((tpe1_size >> 24) & 0xFF);
-        fhdr[5] = (uint8_t)((tpe1_size >> 16) & 0xFF);
-        fhdr[6] = (uint8_t)((tpe1_size >> 8) & 0xFF);
-        fhdr[7] = (uint8_t)(tpe1_size & 0xFF);
-        fhdr[8] = 0; fhdr[9] = 0;
-        fwrite(fhdr, 1, 10, fp);
-        fputc(0, fp);
-        fwrite(artist, 1, alen, fp);
-    }
-
-    /* TALB (Album) frame */
-    if (talb_size > 0) {
-        memcpy(fhdr, "TALB", 4);
-        fhdr[4] = (uint8_t)((talb_size >> 24) & 0xFF);
-        fhdr[5] = (uint8_t)((talb_size >> 16) & 0xFF);
-        fhdr[6] = (uint8_t)((talb_size >> 8) & 0xFF);
-        fhdr[7] = (uint8_t)(talb_size & 0xFF);
-        fhdr[8] = 0; fhdr[9] = 0;
-        fwrite(fhdr, 1, 10, fp);
-        fputc(0, fp);
-        fwrite(album, 1, blen, fp);
-    }
-
-    /* APIC (Attached Picture) frame */
-    if (apic_size > 0) {
-        memcpy(fhdr, "APIC", 4);
-        fhdr[4] = (uint8_t)((apic_size >> 24) & 0xFF);
-        fhdr[5] = (uint8_t)((apic_size >> 16) & 0xFF);
-        fhdr[6] = (uint8_t)((apic_size >> 8) & 0xFF);
-        fhdr[7] = (uint8_t)(apic_size & 0xFF);
-        fhdr[8] = 0; fhdr[9] = 0;
-        fwrite(fhdr, 1, 10, fp);
-        fputc(0, fp);                      /* Text encoding: 0 = ISO-8859-1 */
-        fwrite(mime, 1, mime_len + 1, fp); /* MIME type with null terminator */
-        fputc(0x03, fp);                   /* Picture type: 0x03 = Cover (front) */
-        fputc(0, fp);                      /* Description: empty string null terminator */
-        fwrite(art_data, 1, art_size, fp); /* Image binary data */
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* Collision Resolution: [song].aac -> [song]_001.aac                 */
-
-static void resolve_destination_paths(char *out_aac, char *out_art_stem, size_t maxlen,
+static void resolve_destination_paths(char *out_path, size_t maxlen,
                                       const char *dir, const char *title)
 {
     int i;
 
-    snprintf(out_art_stem, maxlen, "%s/%s", dir, title);
-    snprintf(out_aac, maxlen, "%s.aac", out_art_stem);
+    snprintf(out_path, maxlen, "%s/%s.m4a", dir, title);
 
-    if (access(out_aac, F_OK) != 0) {
+    if (access(out_path, F_OK) != 0) {
         return;
     }
 
     for (i = 1; i <= 999; i++) {
-        snprintf(out_aac, maxlen, "%s/%s_%03d.aac", dir, title, i);
-        if (access(out_aac, F_OK) != 0) {
-            snprintf(out_art_stem, maxlen, "%s/%s_%03d", dir, title, i);
+        snprintf(out_path, maxlen, "%s/%s_%03d.m4a", dir, title, i);
+        if (access(out_path, F_OK) != 0) {
             return;
         }
     }
 
-    snprintf(out_aac, maxlen, "%s/%s_%lu.aac", dir, title, (unsigned long)time(NULL));
-    snprintf(out_art_stem, maxlen, "%s/%s_%lu", dir, title, (unsigned long)time(NULL));
+    snprintf(out_path, maxlen, "%s/%s_%lu.m4a", dir, title, (unsigned long)time(NULL));
 }
 
 /* ------------------------------------------------------------------ */
@@ -277,9 +168,8 @@ static void finalize_current_song(song_recorder_t *rec)
                               strcmp(rec->current_title, "Unknown") != 0);
 
     if (rec->current_packets >= rec->min_song_packets && has_valid_metadata) {
-        char artist_dir[MAX_PATH_LEN];
-        char final_aac[MAX_PATH_LEN * 2];
-        char final_art_stem[MAX_PATH_LEN * 2];
+        char artist_dir[MAX_PATH_LEN * 2];
+        char final_audio[MAX_PATH_LEN * 4];
         char clean_artist[256];
         char clean_title[256];
 
@@ -289,57 +179,90 @@ static void finalize_current_song(song_recorder_t *rec)
         snprintf(artist_dir, sizeof(artist_dir), "%s/%s", rec->base_dir, clean_artist);
         mkdir_p(artist_dir);
 
-        resolve_destination_paths(final_aac, final_art_stem, sizeof(final_aac),
+        resolve_destination_paths(final_audio, sizeof(final_audio),
                                   artist_dir, clean_title);
 
-        FILE *in_fp = fopen(rec->tmp_path, "rb");
-        if (in_fp) {
-            FILE *out_fp = fopen(final_aac, "wb");
-            if (out_fp) {
-                /* Write complete ID3v2 tag (title, artist, album, cover art) */
-                write_id3v2_tag(out_fp, rec->current_title, rec->current_artist,
-                                rec->current_album, rec->current_art_data,
-                                rec->current_art_size, rec->current_art_ext);
-
-                /* Copy audio data */
-                char buf[65536];
-                size_t n;
-                while ((n = fread(buf, 1, sizeof(buf), in_fp)) > 0) {
-                    fwrite(buf, 1, n, out_fp);
-                }
-                fclose(out_fp);
-                fclose(in_fp);
-                unlink(rec->tmp_path);
-
-                unsigned int mins = (unsigned int)(duration_sec / 60);
-                unsigned int secs = (unsigned int)(duration_sec) % 60;
-                log_info("[RECORDER] Saved: \"%s\" by \"%s\"%s%s%s (%u:%02u, %lu packets) -> %s",
-                         rec->current_title, rec->current_artist,
-                         rec->current_album[0] ? " (Album: \"" : "",
-                         rec->current_album[0] ? rec->current_album : "",
-                         rec->current_album[0] ? "\")" : "",
-                         mins, secs, rec->current_packets, final_aac);
-                rec->total_songs_saved++;
-
-                /* Save companion cover art file if available */
-                if (rec->current_art_data && rec->current_art_size > 0) {
-                    char art_path[MAX_PATH_LEN * 4];
-                    snprintf(art_path, sizeof(art_path), "%s%s", final_art_stem, rec->current_art_ext);
-                    FILE *art_fp = fopen(art_path, "wb");
-                    if (art_fp) {
-                        fwrite(rec->current_art_data, 1, rec->current_art_size, art_fp);
-                        fclose(art_fp);
-                        log_info("[RECORDER] Saved cover art -> %s", art_path);
-                    }
-                }
-            } else {
-                log_error("[RECORDER] Failed to open %s for writing: %s", final_aac, strerror(errno));
-                fclose(in_fp);
-                unlink(rec->tmp_path);
+        /* Stage cover art for ffmpeg embedding if available */
+        char tmp_art_path[MAX_PATH_LEN * 4];
+        int has_art = 0;
+        if (rec->current_art_data && rec->current_art_size > 0) {
+            snprintf(tmp_art_path, sizeof(tmp_art_path), "%s/.tmp_art_%lu%s",
+                     artist_dir, (unsigned long)time(NULL), rec->current_art_ext);
+            FILE *art_fp = fopen(tmp_art_path, "wb");
+            if (art_fp) {
+                fwrite(rec->current_art_data, 1, rec->current_art_size, art_fp);
+                fclose(art_fp);
+                has_art = 1;
             }
+        }
+
+        /* Build ffmpeg command with in-memory metadata and cover art */
+        char meta_title[512], meta_artist[512], meta_album[512];
+        char *argv[32];
+        int argc = 0;
+        argv[argc++] = "ffmpeg";
+        argv[argc++] = "-y";
+        argv[argc++] = "-v"; argv[argc++] = "error";
+        argv[argc++] = "-i"; argv[argc++] = rec->tmp_path;
+        if (has_art) {
+            argv[argc++] = "-i"; argv[argc++] = tmp_art_path;
+            argv[argc++] = "-map"; argv[argc++] = "0:a";
+            argv[argc++] = "-map"; argv[argc++] = "1:v";
+            argv[argc++] = "-c:a"; argv[argc++] = "copy";
+            argv[argc++] = "-c:v"; argv[argc++] = "copy";
+            argv[argc++] = "-disposition:v:0"; argv[argc++] = "attached_pic";
         } else {
-            log_error("[RECORDER] Failed to open temp file %s: %s", rec->tmp_path, strerror(errno));
-            unlink(rec->tmp_path);
+            argv[argc++] = "-c:a"; argv[argc++] = "copy";
+        }
+        if (rec->current_title[0]) {
+            snprintf(meta_title, sizeof(meta_title), "title=%s", rec->current_title);
+            argv[argc++] = "-metadata"; argv[argc++] = meta_title;
+        }
+        if (rec->current_artist[0]) {
+            snprintf(meta_artist, sizeof(meta_artist), "artist=%s", rec->current_artist);
+            argv[argc++] = "-metadata"; argv[argc++] = meta_artist;
+        }
+        if (rec->current_album[0]) {
+            snprintf(meta_album, sizeof(meta_album), "album=%s", rec->current_album);
+            argv[argc++] = "-metadata"; argv[argc++] = meta_album;
+        }
+        argv[argc++] = final_audio;
+        argv[argc] = NULL;
+
+        /* Losslessly remux to M4A for universal player / VLC tag support */
+        int remux_ok = 0;
+        pid_t pid = fork();
+        if (pid == 0) {
+            execvp("ffmpeg", argv);
+            _exit(127);
+        } else if (pid > 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                remux_ok = 1;
+            }
+        }
+
+        /* Clean up temporary staging files */
+        if (has_art) {
+            unlink(tmp_art_path);
+        }
+        unlink(rec->tmp_path);
+
+        if (!remux_ok) {
+            log_error("[RECORDER] Failed to finalize \"%s\": ffmpeg remux error", rec->current_title);
+        } else {
+            unsigned int mins = (unsigned int)(duration_sec / 60);
+            unsigned int secs = (unsigned int)(duration_sec) % 60;
+            log_info("[RECORDER] Saved: \"%s\" by \"%s\"%s%s%s (%u:%02u, %lu packets%s) -> %s",
+                     rec->current_title, rec->current_artist,
+                     rec->current_album[0] ? " (Album: \"" : "",
+                     rec->current_album[0] ? rec->current_album : "",
+                     rec->current_album[0] ? "\")" : "",
+                     mins, secs, rec->current_packets,
+                     has_art ? ", embedded art" : "",
+                     final_audio);
+            rec->total_songs_saved++;
         }
     } else {
         unlink(rec->tmp_path);
@@ -413,6 +336,12 @@ static void start_new_song(song_recorder_t *rec, const char *title, const char *
 
 song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, unsigned int program)
 {
+    /* Require ffmpeg for M4A packaging */
+    if (system("ffmpeg -version > /dev/null 2>&1") != 0) {
+        log_error("[RECORDER] ffmpeg is required for stream recording but was not found in PATH");
+        exit(1);
+    }
+
     song_recorder_t *rec = calloc(1, sizeof(*rec));
     if (!rec) return NULL;
 
