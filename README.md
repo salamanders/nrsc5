@@ -12,6 +12,7 @@ To continuously record songs into tagged `.m4a` files with embedded album art:
 nrsc5 --record-songs ./recordings 107.1 0
 
 # Optional flags:
+#   --preroll <seconds>      (pre-roll buffer to preserve song intro; default: 2.5s)
 #   --split-delay <seconds>  (grace period before splitting tracks on title change)
 #   --record-initial         (record whatever is playing immediately upon startup)
 ```

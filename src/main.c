@@ -79,6 +79,7 @@ typedef struct {
     char *record_songs_path;
     double split_delay;
     int record_initial;
+    double preroll_sec;
     song_recorder_t *recorder;
 
     audio_buffer_t *head, *tail, *free;
@@ -819,7 +820,7 @@ static void *input_main(void *arg)
 
 static void help(const char *progname)
 {
-    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [--iq-input-format {cu8,cs16}] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--dump-aas-files directory] [--record-songs directory] [--split-delay seconds] frequency program\n", progname);
+    fprintf(stderr, "Usage: %s [-v] [-q] [--am] [-l log-level] [-d device-index] [-H rtltcp-host] [-p ppm-error] [-g gain] [-r iq-input] [--iq-input-format {cu8,cs16}] [-w iq-output] [-o audio-output] [-t audio-type] [-T] [-D direct-sampling-mode] [--dump-hdc hdc-output] [--dump-aas-files directory] [--record-songs directory] [--split-delay seconds] [--preroll seconds] frequency program\n", progname);
 }
 
 static int ends_with(const char *str, const char *suffix)
@@ -839,6 +840,7 @@ static int parse_args(state_t *st, int argc, char *argv[])
         { "record-songs", required_argument, NULL, 5 },
         { "split-delay", required_argument, NULL, 6 },
         { "record-initial", no_argument, NULL, 7 },
+        { "preroll", required_argument, NULL, 8 },
         { 0 }
     };
     const char *version = NULL;
@@ -855,6 +857,7 @@ static int parse_args(state_t *st, int argc, char *argv[])
     st->iq_input_format = IQ_FORMAT_NONE;
     st->split_delay = 0.0;
     st->record_initial = 0;
+    st->preroll_sec = 2.5;
     log_set_level(LOG_INFO);
 
     while ((opt = getopt_long(argc, argv, "r:w:o:t:d:p:g:ql:vH:TD:", long_opts, NULL)) != -1)
@@ -897,6 +900,10 @@ static int parse_args(state_t *st, int argc, char *argv[])
             break;
         case 7:
             st->record_initial = 1;
+            break;
+        case 8:
+            st->preroll_sec = strtod(optarg, NULL);
+            if (st->preroll_sec < 0.0) st->preroll_sec = 0.0;
             break;
         case 'r':
             st->input_name = strdup(optarg);
@@ -1178,7 +1185,7 @@ int main(int argc, char *argv[])
     {
         if (st->record_initial)
             setenv("NRSC5_RECORD_INITIAL", "1", 1);
-        st->recorder = recorder_create(st->record_songs_path, st->split_delay, st->program);
+        st->recorder = recorder_create(st->record_songs_path, st->split_delay, st->program, st->preroll_sec);
     }
 
     pthread_create(&audio_thread, NULL, audio_main, st);

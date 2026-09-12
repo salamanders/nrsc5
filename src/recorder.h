@@ -10,7 +10,7 @@ extern "C" {
 
 typedef struct song_recorder song_recorder_t;
 
-song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, unsigned int program);
+song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, unsigned int program, double preroll_sec);
 void recorder_destroy(song_recorder_t *rec, int clean_shutdown);
 
 void recorder_on_hdc(song_recorder_t *rec, unsigned int program, const uint8_t *data, size_t len, uint32_t flags);

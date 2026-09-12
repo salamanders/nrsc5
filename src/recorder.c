@@ -21,6 +21,8 @@
 #define DEFAULT_MIN_SONG_PACKETS 1292  /* 60 seconds */
 #define LOT_CACHE_SIZE 8
 #define MAX_PATH_LEN 1024
+#define MAX_PREROLL_FRAMES 128
+#define DEFAULT_PREROLL_SEC 2.5
 
 typedef struct {
     unsigned int lot_id;
@@ -29,13 +31,25 @@ typedef struct {
     size_t size;
 } lot_cache_entry_t;
 
+typedef struct {
+    uint8_t data[MAX_FRAME_BYTES + 7];
+    size_t len;
+} preroll_frame_t;
+
 struct song_recorder {
     char base_dir[MAX_PATH_LEN];
     double split_delay_sec;
+    double preroll_sec;
     unsigned int program;
     unsigned long min_song_packets;
 
     hdc2aac_remuxer_t *remuxer;
+
+    /* Pre-roll ring buffer */
+    preroll_frame_t preroll[MAX_PREROLL_FRAMES];
+    size_t preroll_head;
+    size_t preroll_count;
+    size_t preroll_capacity;
 
     int has_seen_first_transition;
     int record_initial;
@@ -323,6 +337,29 @@ static void start_new_song(song_recorder_t *rec, const char *title, const char *
         return;
     }
 
+    /* Prepend pre-roll buffer frames to capture song intro */
+    if (rec->preroll_count > 0 && rec->preroll_capacity > 0) {
+        size_t start_idx;
+        if (rec->preroll_count < rec->preroll_capacity) {
+            start_idx = 0;
+        } else {
+            start_idx = rec->preroll_head;
+        }
+
+        for (size_t i = 0; i < rec->preroll_count; i++) {
+            size_t idx = (start_idx + i) % rec->preroll_capacity;
+            preroll_frame_t *frame = &rec->preroll[idx];
+            if (frame->len > 0) {
+                fwrite(frame->data, 1, frame->len, rec->tmp_fp);
+                rec->current_packets++;
+            }
+        }
+        log_info("[RECORDER] Prepended %zu pre-roll frames (%.2fs) to \"%s\"",
+                 rec->preroll_count, rec->preroll_count * 0.0464399, rec->current_title);
+        rec->preroll_count = 0;
+        rec->preroll_head = 0;
+    }
+
     log_info("[RECORDER] Now recording: \"%s\" by \"%s\"%s%s%s (XHDR LOT: %d)",
              rec->current_title, rec->current_artist,
              rec->current_album[0] ? " (Album: \"" : "",
@@ -334,7 +371,7 @@ static void start_new_song(song_recorder_t *rec, const char *title, const char *
 /* ------------------------------------------------------------------ */
 /* Public API                                                         */
 
-song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, unsigned int program)
+song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, unsigned int program, double preroll_sec)
 {
     /* Require ffmpeg for M4A packaging */
     if (system("ffmpeg -version > /dev/null 2>&1") != 0) {
@@ -348,6 +385,21 @@ song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, u
     strncpy(rec->base_dir, base_dir, sizeof(rec->base_dir) - 1);
     rec->split_delay_sec = split_delay_sec;
     rec->program = program;
+
+    rec->preroll_sec = preroll_sec;
+    const char *preroll_env = getenv("NRSC5_RECORDER_PREROLL");
+    if (preroll_env) {
+        rec->preroll_sec = atof(preroll_env);
+    }
+    if (rec->preroll_sec < 0.0) rec->preroll_sec = 0.0;
+
+    /* ~21.533 frames per second (2048 samples / 44100 Hz per frame) */
+    rec->preroll_capacity = (size_t)(rec->preroll_sec * 21.533 + 0.5);
+    if (rec->preroll_capacity > MAX_PREROLL_FRAMES) {
+        rec->preroll_capacity = MAX_PREROLL_FRAMES;
+    }
+    rec->preroll_head = 0;
+    rec->preroll_count = 0;
 
     /* Check for test override of minimum duration */
     const char *min_pkt_env = getenv("NRSC5_RECORDER_MIN_PACKETS");
@@ -370,8 +422,9 @@ song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, u
         return NULL;
     }
 
-    log_info("[RECORDER] Initialized: target folder \"%s\", program %u, min duration %lus",
-             rec->base_dir, rec->program, (unsigned long)(rec->min_song_packets * 0.0464399));
+    log_info("[RECORDER] Initialized: target folder \"%s\", program %u, min duration %lus, pre-roll %.2fs (%zu frames)",
+             rec->base_dir, rec->program, (unsigned long)(rec->min_song_packets * 0.0464399),
+             rec->preroll_sec, rec->preroll_capacity);
 
     return rec;
 }
@@ -422,14 +475,25 @@ void recorder_on_hdc(song_recorder_t *rec, unsigned int program, const uint8_t *
     /* Skip corrupted frames */
     if (flags & 1) return;
 
-    /* Wait until the first clean song transition */
-    if (!rec->has_seen_first_transition || !rec->tmp_fp)
+    aac_len = hdc2aac_remux_frame(rec->remuxer, data, len, aac_buf, sizeof(aac_buf));
+    if (aac_len == 0)
         return;
 
-    aac_len = hdc2aac_remux_frame(rec->remuxer, data, len, aac_buf, sizeof(aac_buf));
-    if (aac_len > 0) {
+    /* If a song file is currently open, write frame directly to it */
+    if (rec->has_seen_first_transition && rec->tmp_fp) {
         fwrite(aac_buf, 1, aac_len, rec->tmp_fp);
         rec->current_packets++;
+    }
+
+    /* Store frame into rolling pre-roll ring buffer */
+    if (rec->preroll_capacity > 0) {
+        preroll_frame_t *slot = &rec->preroll[rec->preroll_head];
+        memcpy(slot->data, aac_buf, aac_len);
+        slot->len = aac_len;
+        rec->preroll_head = (rec->preroll_head + 1) % rec->preroll_capacity;
+        if (rec->preroll_count < rec->preroll_capacity) {
+            rec->preroll_count++;
+        }
     }
 }
 
