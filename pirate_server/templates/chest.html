@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>The Treasure Chest</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>THE TREASURE CHEST</h1>
+      <p>Pick a song captured live off the air. There is only one copy—once plundered, it vanishes from the vessel.</p>
+
+      <input type="text" id="searchBox" class="search-box" placeholder="Search artist or title..." autocomplete="off">
+
+      <ul id="songList" class="song-list">
+        {% for song in songs %}
+        <li class="song-item" data-path="{{ song.rel_path }}" data-title="{{ song.display_title }}" data-artist="{{ song.display_artist }}">
+          <div class="song-info">
+            <div class="song-title">{{ song.display_title }}</div>
+            <div class="song-artist">{{ song.display_artist }}</div>
+          </div>
+          <span class="song-badge">PLUNDER</span>
+        </li>
+        {% endfor %}
+      </ul>
+
+      <div id="emptyMsg" style="display: none; padding: 20px; font-style: italic; color: #777;">
+        No treasure matches yer query, matey!
+      </div>
+
+      <div style="font-size: 0.85rem; color: #665038;">
+        Available Booty: <strong id="songCount">{{ songs|length }}</strong> unique radio recordings
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div id="modal" class="modal-overlay">
+    <div id="modalCard" class="modal-card">
+      <h2 style="color: var(--crimson);">CLAIM THIS BOOTY?</h2>
+      <p style="margin: 12px 0;">Ye are about to plunder:</p>
+      <div style="background: rgba(74, 53, 37, 0.08); padding: 12px; border-radius: 4px; margin-bottom: 16px;">
+        <div id="modalTitle" style="font-weight: 700; font-size: 1.05rem; color: var(--wood);"></div>
+        <div id="modalArtist" style="font-size: 0.9rem; color: var(--text-muted); margin-top: 2px;"></div>
+      </div>
+      <p style="font-size: 0.88rem; color: var(--crimson); font-weight: 600;">
+        Once downloaded, this track vanishes forever from our vessel!
+      </p>
+
+      <div class="btn-stack">
+        <button id="confirmBtn" class="btn btn-gold" onclick="executePlunder()">CLAIM & DOWNLOAD</button>
+        <button class="btn btn-wood" onclick="closeModal()">KEEP SEARCHIN'</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let selectedPath = "";
+
+    // Live search filter
+    document.getElementById('searchBox').addEventListener('input', function(e) {
+      const q = e.target.value.toLowerCase().trim();
+      const items = document.querySelectorAll('.song-item');
+      let visible = 0;
+
+      items.forEach(item => {
+        const text = item.innerText.toLowerCase();
+        if (text.includes(q)) {
+          item.style.display = 'flex';
+          visible++;
+        } else {
+          item.style.display = 'none';
+        }
+      });
+
+      document.getElementById('emptyMsg').style.display = visible === 0 ? 'block' : 'none';
+    });
+
+    // Event delegation on song list for robust mobile touch/click
+    document.getElementById('songList').addEventListener('click', function(e) {
+      const item = e.target.closest('.song-item');
+      if (!item) return;
+      openPlunder(item.dataset.path, item.dataset.title, item.dataset.artist);
+    });
+
+    function openPlunder(relPath, title, artist) {
+      selectedPath = relPath;
+      document.getElementById('modalTitle').innerText = title;
+      document.getElementById('modalArtist').innerText = artist;
+      document.getElementById('modal').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.remove('active');
+      selectedPath = "";
+    }
+
+    function executePlunder() {
+      if (!selectedPath) return;
+      const btn = document.getElementById('confirmBtn');
+      btn.innerText = "Plundering...";
+      btn.disabled = true;
+
+      // Trigger download via link to preserve native mobile download manager without interrupting page
+      const downloadUrl = '/download?file=' + encodeURIComponent(selectedPath);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', '');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      // Update modal to show immediate feedback and smooth transition to farewell
+      document.getElementById('modalCard').innerHTML = `
+        <h2 style="color: var(--gold);">BOOTY PLUNDERED!</h2>
+        <p style="margin: 12px 0;">Yer song is downloadin' now to yer device's <strong>Downloads</strong> folder.</p>
+        <p style="font-size: 0.88rem; color: #5a422d; margin-bottom: 20px;">
+          This was the only copy on the seven seas! Once yer download finishes, sail onward:
+        </p>
+        <div class="btn-stack">
+          <a href="/farewell" class="btn btn-gold">PROCEED TO FAREWELL</a>
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>

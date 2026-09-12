@@ -2,6 +2,35 @@
 
 This program receives NRSC-5 digital radio stations using an RTL-SDR dongle, or by reading from I/Q files. It offers a command-line interface as well as an API upon which other applications can be built. Before using it, you'll first need to compile the program using the build instructions below.
 
+## Quick Start: Continuous Song Recording & Pirate Server
+
+### 1. Continual Song Recording
+To continuously record songs into tagged `.m4a` files with embedded album art:
+
+```bash
+# Tune to frequency and program (e.g. 107.1 MHz, program 0) and record into ./recordings
+nrsc5 --record-songs ./recordings 107.1 0
+
+# Optional flags:
+#   --split-delay <seconds>  (grace period before splitting tracks on title change)
+#   --record-initial         (record whatever is playing immediately upon startup)
+```
+
+### 2. Pirate Web Server (Single-Serving Plunder Server)
+To serve the recordings to visitors connecting to your hat's local Wi-Fi:
+
+```bash
+# Run on default port 8080:
+python3 pirate_server/server.py
+
+# Or run on port 80 (standard HTTP without specifying port in browser):
+sudo PIRATE_PORT=80 python3 pirate_server/server.py
+
+# Custom recordings path:
+RECORDINGS_DIR=/path/to/recordings python3 pirate_server/server.py
+```
+Each song downloaded is automatically deleted from disk after transfer to ensure single-copy distribution compliance.
+
 ## Building on Ubuntu, Debian or Raspbian
 
     sudo apt install git build-essential cmake autoconf libtool libao-dev libfftw3-dev librtlsdr-dev
