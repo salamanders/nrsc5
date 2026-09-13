@@ -4,6 +4,9 @@ import os
 import sys
 import shutil
 import mimetypes
+import time
+import threading
+import subprocess
 
 PORT = int(os.environ.get("PIRATE_PORT", 80))
 HOST = os.environ.get("PIRATE_HOST", "192.168.4.1")
@@ -13,8 +16,69 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
+# In-memory dual-defense cooldown and image asset caching
+PLUNDER_COOLDOWN = {}  # ip -> timestamp
+STATIC_IMAGE_CACHE = {}  # rel_path -> bytes
+
+def get_mac_for_ip(ip):
+    """Looks up MAC address for given client IP from kernel ARP table."""
+    try:
+        with open("/proc/net/arp", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == ip:
+                    mac = parts[3]
+                    if mac != "00:00:00:00:00:00":
+                        return mac
+    except Exception:
+        pass
+    return None
+
+def deauth_mac(mac):
+    """Deauthenticates a Wi-Fi station to free up hardware association slots."""
+    if not mac or mac == "00:00:00:00:00:00":
+        return
+    try:
+        subprocess.run(["sudo", "iw", "dev", "wlan0", "station", "del", mac],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except Exception:
+        pass
+
+def schedule_farewell_deauth(ip):
+    """Gives user 15s to view farewell instructions, then softly disconnects Wi-Fi."""
+    def _delayed():
+        time.sleep(15)
+        mac = get_mac_for_ip(ip)
+        if mac:
+            deauth_mac(mac)
+    threading.Thread(target=_delayed, daemon=True).start()
+
+def run_station_reaper():
+    """Background daemon: periodically evicts devices idle for >= 45 seconds."""
+    while True:
+        time.sleep(20)
+        try:
+            res = subprocess.run(["sudo", "iw", "dev", "wlan0", "station", "dump"],
+                                 capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout:
+                current_mac = None
+                for line in res.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("Station"):
+                        current_mac = line.split()[1]
+                    elif "inactive time:" in line and current_mac:
+                        parts = line.split()
+                        if "inactive" in parts:
+                            idx = parts.index("inactive")
+                            inactive_ms = int(parts[idx + 2])
+                            if inactive_ms >= 45000:
+                                deauth_mac(current_mac)
+                                current_mac = None
+        except Exception:
+            pass
+
 def scan_songs():
-    """Scans the recordings directory and returns a sorted list of songs."""
+    """Scans the recordings directory and returns a sorted list of valid songs (> 1 KB)."""
     songs = []
     if not os.path.isdir(RECORDINGS_DIR):
         return songs
@@ -23,8 +87,13 @@ def scan_songs():
         for f in files:
             if f.lower().endswith(".m4a") and not f.startswith("."):
                 full_path = os.path.join(root, f)
+                try:
+                    if os.path.getsize(full_path) <= 1024:
+                        continue  # Filter empty or broken stubs (Bug 2.2 / 3.3)
+                except OSError:
+                    continue
+
                 rel_path = os.path.relpath(full_path, RECORDINGS_DIR)
-                
                 parts = rel_path.split(os.sep)
                 artist = parts[0] if len(parts) >= 2 else "Unknown"
                 title = os.path.splitext(parts[-1])[0]
@@ -44,8 +113,19 @@ def scan_songs():
 class PirateHandler(http.server.BaseHTTPRequestHandler):
     server_version = "PirateShip/2.0"
 
+    def do_HEAD(self):
+        self.do_GET()
+
     def has_plundered(self):
-        return "plundered=1" in self.headers.get("Cookie", "")
+        # 1. Check browser cookie
+        if "plundered=1" in self.headers.get("Cookie", ""):
+            return True
+        # 2. Check in-memory IP cooldown (10 minutes = 600s)
+        client_ip = self.client_address[0]
+        last_time = PLUNDER_COOLDOWN.get(client_ip, 0)
+        if (time.time() - last_time) < 600:
+            return True
+        return False
 
     def is_cna_client(self):
         """Detects if client is an iOS Captive Network Assistant (sandboxed popup)."""
@@ -57,6 +137,9 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        # Strictly anti-cache HTML pages so songs plundered immediately disappear on refresh
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(data)
 
@@ -70,16 +153,32 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
             return
 
         mime_type, _ = mimetypes.guess_type(full_path)
-        try:
-            with open(full_path, "rb") as f:
-                content = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", mime_type or "application/octet-stream")
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-        except Exception as e:
-            self.send_error(500, f"Error reading file: {e}")
+        content_type = mime_type or "application/octet-stream"
+
+        # Developer preference: Cache images only; never cache CSS/JS/HTML so tweaks are immediate
+        is_image = clean_path.lower().endswith((".jpg", ".jpeg", ".png", ".svg"))
+
+        if is_image and clean_path in STATIC_IMAGE_CACHE:
+            content = STATIC_IMAGE_CACHE[clean_path]
+        else:
+            try:
+                with open(full_path, "rb") as f:
+                    content = f.read()
+                if is_image and len(content) < 500000:
+                    STATIC_IMAGE_CACHE[clean_path] = content
+            except Exception as e:
+                self.send_error(500, f"Error reading file: {e}")
+                return
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        if is_image:
+            self.send_header("Cache-Control", "public, max-age=604800")
+        else:
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
+        self.end_headers()
+        self.wfile.write(content)
 
     def render_template(self, name, context=None):
         context = context or {}
@@ -192,6 +291,8 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
 
         # 3. Farewell page
         if path == "/farewell":
+            # Softly deauthenticate this station 15 seconds after reaching farewell
+            schedule_farewell_deauth(self.client_address[0])
             html_page = self.render_template("farewell.html")
             self.send_html(html_page)
             return
@@ -247,6 +348,15 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(404, "That treasure has already been plundered by another pirate!")
                 return
 
+            try:
+                file_size = os.path.getsize(full_path)
+                if file_size <= 1024:
+                    self.send_error(404, "That treasure was damaged or lost in the depths!")
+                    return
+            except OSError:
+                self.send_error(404, "That treasure has already been plundered by another pirate!")
+                return
+
             # Protection against Apple CNA file deletion bug:
             # If request is from an Apple captive popup, do NOT stream & delete!
             if self.is_cna_client():
@@ -254,7 +364,8 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             filename = os.path.basename(full_path)
-            file_size = os.path.getsize(full_path)
+            client_ip = self.client_address[0]
+            PLUNDER_COOLDOWN[client_ip] = time.time()
 
             self.send_response(200)
             self.send_header("Content-Type", "audio/mp4")
@@ -269,6 +380,15 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                     shutil.copyfileobj(f, self.wfile)
                 os.unlink(full_path)
                 print(f"[PIRATE] Plundered & deleted: {filename}")
+
+                # Clean up empty parent artist directory if all songs for this artist were plundered (Bug 3.4)
+                parent_dir = os.path.dirname(full_path)
+                if parent_dir != RECORDINGS_DIR and parent_dir.startswith(RECORDINGS_DIR):
+                    try:
+                        os.rmdir(parent_dir)
+                        print(f"[PIRATE] Cleaned empty vault drawer: {os.path.basename(parent_dir)}")
+                    except OSError:
+                        pass
             except Exception as e:
                 print(f"[PIRATE] Download error for {filename}: {e}")
             return
@@ -285,6 +405,10 @@ def run_server():
     print(f"Serving port: {PORT}")
     print(f"Booty vault:  {RECORDINGS_DIR}")
     print("=" * 60)
+
+    # Start automated idle Wi-Fi station reaper daemon thread (Bug 1.3)
+    reaper = threading.Thread(target=run_station_reaper, daemon=True)
+    reaper.start()
 
     with http.server.ThreadingHTTPServer(("", PORT), PirateHandler) as httpd:
         try:
