@@ -475,21 +475,22 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
                      [Phone Connects: 192.168.4.x via DHCP]
                                         │
                                         ▼
-                        [Captive Portal Prompt Opens]
-                         (No scrolling, single screen)
+                     [Captive Portal Opens: portal.html]
+                     (Exactly ONE thing to do: Get Out)
                                         │
             ┌───────────────────────────┴───────────────────────────┐
             ▼                                                       ▼
       [Apple iOS / iPhone]                                  [Google Android]
             │                                                       │
-  • Captive sheet opens                                   • Captive window opens
-  • Tap "Copy Link" (copies 192.168.4.1)                  • Option A: Tap "OPEN IN CHROME"
-  • Open native Safari & paste link                         Option B: Tap "ENTER THE CHEST" directly
-  • Browse vault & search tracks                          • Browse vault & search tracks
-  • Tap "CLAIM & DOWNLOAD"                                • Tap "CLAIM & DOWNLOAD"
-  • Safari downloads .m4a to Files                        • Chrome prompts "Download unsecurely?" -> Keep
+  • Shows ONLY "Copy Link" card                           • Shows ONLY "OPEN IN CHROME" button
+  • Tap "Copy Link" (copies 192.168.4.1)                  • Tap "OPEN IN CHROME" (launches Chrome)
+  • Open Safari & paste link                              • Chrome loads http://192.168.4.1/
             │                                                       │
             └───────────────────────────┬───────────────────────────┘
+                                        │
+                                        ▼
+                  [Real Browser Lands Directly in Chest]
+                       (Browse, search, and plunder)
                                         │
                                         ▼
                    [Track Deleted from Pi Single-Serving Vault]
