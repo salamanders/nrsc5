@@ -434,15 +434,15 @@ This document details all potential bugs, edge cases, failure modes, and archite
 
 ## 5. Pre-Faire Implementation Checklist
 
-1. [ ] **1.1: Install `nrsc5-recorder.service`**: Systemd unit configured with `NRSC5_FREQ=89.5`, `NRSC5_PROGRAM=1` (HD2), `RestartSec=30`, and journald logging.
-2. [ ] **1.2: Configure Aggressive DHCP Recycling**: Set `dhcp-range=...,2m` and `dhcp-lease-max=250` in `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf`.
-3. [ ] **1.3: Software Station Management**: Add idle station reaper (`iw dev wlan0 station dump` > 45s deauth) and soft deauth 15s after `/farewell`.
-4. [ ] **1.4: Volatile In-RAM Logging**: Enable `nrsc5 -q`, configure `/etc/systemd/journald.conf.d/00-pirate.conf` with `Storage=volatile`, and delete `nohup.out`.
-5. [ ] **2.1: Asynchronous Packaging**: Decouple `ffmpeg` fork/waitpid into a detached background worker thread in `src/recorder.c`.
-6. [ ] **2.2: 0-Byte Protection & Vault Purge**: Add `stat()` check and auto-unlink on error in `recorder.c`, filter `> 1024` in `server.py`, and delete `./Motley_Crue/Girls_Girls_Girls.m4a`.
-7. [ ] **2.3: Collision-Free Staging**: Generate unique PID/timestamp staging files and run startup orphan cleaner in `recorder_create()`.
+1. [x] **1.1: Install `nrsc5-recorder.service`**: Systemd unit configured with `NRSC5_FREQ=89.5`, `NRSC5_PROGRAM=1` (HD2), `RestartSec=30`, and journald logging.
+2. [x] **1.2: Configure Aggressive DHCP Recycling**: Set `dhcp-range=...,2m` and `dhcp-lease-max=250` in `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf`.
+3. [x] **1.3: Software Station Management**: Add idle station reaper (`iw dev wlan0 station dump` > 45s deauth) and soft deauth 15s after `/farewell`.
+4. [x] **1.4: Volatile In-RAM Logging**: Enable `nrsc5 -q`, configure `/etc/systemd/journald.conf.d/00-pirate.conf` with `Storage=volatile`, and delete `nohup.out`.
+5. [x] **2.1: Asynchronous Packaging**: Decouple `ffmpeg` fork/waitpid into a detached background worker thread in `src/recorder.c`.
+6. [x] **2.2: 0-Byte Protection & Vault Purge**: Add `stat()` check and auto-unlink on error in `recorder.c`, filter `> 1024` in `server.py`, and delete `./Motley_Crue/Girls_Girls_Girls.m4a`.
+7. [x] **2.3: Collision-Free Staging**: Generate unique PID/timestamp staging files and run startup orphan cleaner in `recorder_create()`.
 8. [ ] **2.4: Track Tail Bleed**: **[DEFERRED]** Do not implement for Maker Faire; keep for future research.
-9. [ ] **3.1: Compress Map Tile & Cache**: Compress `map_bg.jpg` to ~90 KB; send `max-age=604800` strictly for images while keeping CSS/JS live.
-10. [ ] **3.2: Dynamic HTML Anti-Caching**: Send `Cache-Control: no-store, no-cache, must-revalidate` in `server.py:send_html()`.
-11. [ ] **3.4: Safe Vault Drawer Pruning**: Call `os.rmdir()` inside `try/except OSError` on parent artist folders after unlinking plundered tracks.
-12. [ ] **3.5: Dual Cooldown**: Add in-memory IP timestamp check alongside `plundered=1` cookie in `server.py`.
+9. [x] **3.1: Compress Map Tile & Cache**: Compress `map_bg.jpg` to ~90 KB; send `max-age=604800` strictly for images while keeping CSS/JS live.
+10. [x] **3.2: Dynamic HTML Anti-Caching**: Send `Cache-Control: no-store, no-cache, must-revalidate` in `server.py:send_html()`.
+11. [x] **3.4: Safe Vault Drawer Pruning**: Call `os.rmdir()` inside `try/except OSError` on parent artist folders after unlinking plundered tracks.
+12. [x] **3.5: Dual Cooldown**: Add in-memory IP timestamp check alongside `plundered=1` cookie in `server.py`.
