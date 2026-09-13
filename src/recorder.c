@@ -12,6 +12,8 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
+#include <pthread.h>
+#include <dirent.h>
 
 #include "recorder.h"
 #include "hdc2aac_remux.h"
@@ -167,6 +169,105 @@ static void resolve_destination_paths(char *out_path, size_t maxlen,
 }
 
 /* ------------------------------------------------------------------ */
+/* Background Worker for Non-Blocking Remuxing (Bug 2.1 & Bug 2.2)   */
+
+typedef struct {
+    char input_aac_path[MAX_PATH_LEN * 2];
+    char tmp_art_path[MAX_PATH_LEN * 4];
+    int has_art;
+    char final_audio_path[MAX_PATH_LEN * 4];
+    char title[256];
+    char artist[256];
+    char album[256];
+    double duration_sec;
+    unsigned long packets;
+} remux_job_t;
+
+static void *remux_worker_thread(void *arg)
+{
+    remux_job_t *job = (remux_job_t *)arg;
+    if (!job) return NULL;
+
+    char meta_title[512], meta_artist[512], meta_album[512];
+    char *argv[32];
+    int argc = 0;
+
+    argv[argc++] = "ffmpeg";
+    argv[argc++] = "-y";
+    argv[argc++] = "-v"; argv[argc++] = "error";
+    argv[argc++] = "-i"; argv[argc++] = job->input_aac_path;
+    if (job->has_art) {
+        argv[argc++] = "-i"; argv[argc++] = job->tmp_art_path;
+        argv[argc++] = "-map"; argv[argc++] = "0:a";
+        argv[argc++] = "-map"; argv[argc++] = "1:v";
+        argv[argc++] = "-c:a"; argv[argc++] = "copy";
+        argv[argc++] = "-c:v"; argv[argc++] = "copy";
+        argv[argc++] = "-disposition:v:0"; argv[argc++] = "attached_pic";
+    } else {
+        argv[argc++] = "-c:a"; argv[argc++] = "copy";
+    }
+    if (job->title[0]) {
+        snprintf(meta_title, sizeof(meta_title), "title=%s", job->title);
+        argv[argc++] = "-metadata"; argv[argc++] = meta_title;
+    }
+    if (job->artist[0]) {
+        snprintf(meta_artist, sizeof(meta_artist), "artist=%s", job->artist);
+        argv[argc++] = "-metadata"; argv[argc++] = meta_artist;
+    }
+    if (job->album[0]) {
+        snprintf(meta_album, sizeof(meta_album), "album=%s", job->album);
+        argv[argc++] = "-metadata"; argv[argc++] = meta_album;
+    }
+    argv[argc++] = job->final_audio_path;
+    argv[argc] = NULL;
+
+    /* Losslessly remux to M4A without blocking the main SDR loop */
+    int remux_ok = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        execvp("ffmpeg", argv);
+        _exit(127);
+    } else if (pid > 0) {
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            remux_ok = 1;
+        }
+    }
+
+    /* Bug 2.2: Verify size and auto-unlink on failure or broken stub */
+    struct stat st;
+    int is_valid = (remux_ok && stat(job->final_audio_path, &st) == 0 && st.st_size > 1024);
+
+    if (!is_valid) {
+        unlink(job->final_audio_path);
+        log_error("[RECORDER] Failed to finalize \"%s\": ffmpeg remux error or empty output (unlinked)", job->title);
+    } else {
+        unsigned int mins = (unsigned int)(job->duration_sec / 60);
+        unsigned int secs = (unsigned int)(job->duration_sec) % 60;
+        log_info("[RECORDER] Saved: \"%s\" by \"%s\"%s%s%s (%u:%02u, %lu packets%s) -> %s",
+                 job->title, job->artist,
+                 job->album[0] ? " (Album: \"" : "",
+                 job->album[0] ? job->album : "",
+                 job->album[0] ? "\")" : "",
+                 mins, secs, job->packets,
+                 job->has_art ? ", embedded art" : "",
+                 job->final_audio_path);
+    }
+
+    /* Clean up temporary staging files */
+    if (job->has_art) {
+        unlink(job->tmp_art_path);
+    }
+    unlink(job->input_aac_path);
+
+    free(job);
+    return NULL;
+}
+
+static unsigned long g_song_seq = 0;
+
+/* ------------------------------------------------------------------ */
 /* Song Lifecycle: Finalize & Open                                    */
 
 static void finalize_current_song(song_recorder_t *rec)
@@ -200,8 +301,8 @@ static void finalize_current_song(song_recorder_t *rec)
         char tmp_art_path[MAX_PATH_LEN * 4];
         int has_art = 0;
         if (rec->current_art_data && rec->current_art_size > 0) {
-            snprintf(tmp_art_path, sizeof(tmp_art_path), "%s/.tmp_art_%lu%s",
-                     artist_dir, (unsigned long)time(NULL), rec->current_art_ext);
+            snprintf(tmp_art_path, sizeof(tmp_art_path), "%s/.tmp_art_%d_%lu_%lu%s",
+                     artist_dir, (int)getpid(), (unsigned long)time(NULL), ++g_song_seq, rec->current_art_ext);
             FILE *art_fp = fopen(tmp_art_path, "wb");
             if (art_fp) {
                 fwrite(rec->current_art_data, 1, rec->current_art_size, art_fp);
@@ -210,73 +311,45 @@ static void finalize_current_song(song_recorder_t *rec)
             }
         }
 
-        /* Build ffmpeg command with in-memory metadata and cover art */
-        char meta_title[512], meta_artist[512], meta_album[512];
-        char *argv[32];
-        int argc = 0;
-        argv[argc++] = "ffmpeg";
-        argv[argc++] = "-y";
-        argv[argc++] = "-v"; argv[argc++] = "error";
-        argv[argc++] = "-i"; argv[argc++] = rec->tmp_path;
-        if (has_art) {
-            argv[argc++] = "-i"; argv[argc++] = tmp_art_path;
-            argv[argc++] = "-map"; argv[argc++] = "0:a";
-            argv[argc++] = "-map"; argv[argc++] = "1:v";
-            argv[argc++] = "-c:a"; argv[argc++] = "copy";
-            argv[argc++] = "-c:v"; argv[argc++] = "copy";
-            argv[argc++] = "-disposition:v:0"; argv[argc++] = "attached_pic";
-        } else {
-            argv[argc++] = "-c:a"; argv[argc++] = "copy";
+        /* Rename active temporary recording to an isolated staging file for background worker */
+        char staging_aac[MAX_PATH_LEN * 2];
+        snprintf(staging_aac, sizeof(staging_aac), "%s/.staging_%d_%lu_%lu.aac",
+                 rec->base_dir, (int)getpid(), (unsigned long)time(NULL), ++g_song_seq);
+        if (rename(rec->tmp_path, staging_aac) != 0) {
+            /* Fallback copy path if rename fails across filesystems */
+            snprintf(staging_aac, sizeof(staging_aac), "%s", rec->tmp_path);
         }
-        if (rec->current_title[0]) {
-            snprintf(meta_title, sizeof(meta_title), "title=%s", rec->current_title);
-            argv[argc++] = "-metadata"; argv[argc++] = meta_title;
-        }
-        if (rec->current_artist[0]) {
-            snprintf(meta_artist, sizeof(meta_artist), "artist=%s", rec->current_artist);
-            argv[argc++] = "-metadata"; argv[argc++] = meta_artist;
-        }
-        if (rec->current_album[0]) {
-            snprintf(meta_album, sizeof(meta_album), "album=%s", rec->current_album);
-            argv[argc++] = "-metadata"; argv[argc++] = meta_album;
-        }
-        argv[argc++] = final_audio;
-        argv[argc] = NULL;
 
-        /* Losslessly remux to M4A for universal player / VLC tag support */
-        int remux_ok = 0;
-        pid_t pid = fork();
-        if (pid == 0) {
-            execvp("ffmpeg", argv);
-            _exit(127);
-        } else if (pid > 0) {
-            int status = 0;
-            waitpid(pid, &status, 0);
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                remux_ok = 1;
+        remux_job_t *job = calloc(1, sizeof(*job));
+        if (job) {
+            snprintf(job->input_aac_path, sizeof(job->input_aac_path), "%s", staging_aac);
+            snprintf(job->final_audio_path, sizeof(job->final_audio_path), "%s", final_audio);
+            job->has_art = has_art;
+            if (has_art) {
+                snprintf(job->tmp_art_path, sizeof(job->tmp_art_path), "%s", tmp_art_path);
             }
-        }
+            snprintf(job->title, sizeof(job->title), "%s", rec->current_title);
+            snprintf(job->artist, sizeof(job->artist), "%s", rec->current_artist);
+            snprintf(job->album, sizeof(job->album), "%s", rec->current_album);
+            job->duration_sec = duration_sec;
+            job->packets = rec->current_packets;
 
-        /* Clean up temporary staging files */
-        if (has_art) {
-            unlink(tmp_art_path);
-        }
-        unlink(rec->tmp_path);
+            /* Launch detached background packaging worker (Bug 2.1) */
+            pthread_t tid;
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-        if (!remux_ok) {
-            log_error("[RECORDER] Failed to finalize \"%s\": ffmpeg remux error", rec->current_title);
-        } else {
-            unsigned int mins = (unsigned int)(duration_sec / 60);
-            unsigned int secs = (unsigned int)(duration_sec) % 60;
-            log_info("[RECORDER] Saved: \"%s\" by \"%s\"%s%s%s (%u:%02u, %lu packets%s) -> %s",
-                     rec->current_title, rec->current_artist,
-                     rec->current_album[0] ? " (Album: \"" : "",
-                     rec->current_album[0] ? rec->current_album : "",
-                     rec->current_album[0] ? "\")" : "",
-                     mins, secs, rec->current_packets,
-                     has_art ? ", embedded art" : "",
-                     final_audio);
+            if (pthread_create(&tid, &attr, remux_worker_thread, job) != 0) {
+                log_error("[RECORDER] Failed to spawn background remux thread for \"%s\", executing synchronously", rec->current_title);
+                remux_worker_thread(job);
+            }
+            pthread_attr_destroy(&attr);
             rec->total_songs_saved++;
+        } else {
+            log_error("[RECORDER] Out of memory allocating remux job for \"%s\"", rec->current_title);
+            if (has_art) unlink(tmp_art_path);
+            unlink(staging_aac);
         }
     } else {
         unlink(rec->tmp_path);
@@ -330,7 +403,9 @@ static void start_new_song(song_recorder_t *rec, const char *title, const char *
         }
     }
 
-    snprintf(rec->tmp_path, sizeof(rec->tmp_path), "%s/.tmp_recording.aac", rec->base_dir);
+    /* Bug 2.3: Dynamic PID and sequence naming guarantees zero file collisions */
+    snprintf(rec->tmp_path, sizeof(rec->tmp_path), "%s/.tmp_rec_%d_%lu_%lu.aac",
+             rec->base_dir, (int)getpid(), (unsigned long)time(NULL), ++g_song_seq);
     rec->tmp_fp = fopen(rec->tmp_path, "wb");
     if (!rec->tmp_fp) {
         log_error("[RECORDER] Failed to create staging file %s: %s", rec->tmp_path, strerror(errno));
@@ -415,6 +490,20 @@ song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, u
     }
 
     mkdir_p(rec->base_dir);
+
+    /* Bug 2.3: Clean up any dangling temporary or staging files from prior unclean shutdowns */
+    DIR *d = opendir(rec->base_dir);
+    if (d) {
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            if (strncmp(de->d_name, ".tmp_", 5) == 0 || strncmp(de->d_name, ".staging_", 9) == 0) {
+                char orphan[MAX_PATH_LEN * 2];
+                snprintf(orphan, sizeof(orphan), "%s/%s", rec->base_dir, de->d_name);
+                unlink(orphan);
+            }
+        }
+        closedir(d);
+    }
 
     rec->remuxer = hdc2aac_remuxer_create();
     if (!rec->remuxer) {
