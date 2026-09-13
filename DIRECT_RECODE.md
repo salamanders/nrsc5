@@ -321,48 +321,46 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 
 ### Design & Mechanics
 - **Physical Context**: Embedded inside a Maker Faire Audio Hat running on a Raspberry Pi with an RTL-SDR dongle disguised as a feather.
-- **Access Flow**: Visitors connect to the offline Wi-Fi AP (`PirateHat`, password: `treasure`) $\rightarrow$ captive popup directs them to copy link $\rightarrow$ browse in Safari/Chrome to `http://192.168.4.1` (or `pirate.box`).
+- **Access Flow**: Clean 2-step badge process:
+  1. Scan **Step 1 QR** (or type SSID `PirateHat`, password `treasure`) to associate with Wi-Fi.
+  2. Scan **Step 2 QR** (or browse to `http://192.168.4.1/`) to open the Treasure Chest in Safari/Chrome and plunder a track.
 - **Pages**:
-  - `/` ("ARE YE FRIEND OR BE YE FOE?").
-  - `/foe` ("Walk the plank" with repentance button).
-  - `/chest` (Song list with live search, confirmation modal).
+  - `/` and `/chest` (Song list with live search, confirmation modal).
   - `/download?file=...` (Streams `.m4a` to browser, deletes file from disk immediately via `os.unlink()`, sets 10-min cookie `plundered=1`).
   - `/farewell` (Explains download location, tells visitor to disconnect Wi-Fi and sail the high seas for 10 minutes before plundering again).
+  - `/badge` (Simplified 2-step printable badge with base64 QR codes).
 - **Design Aesthetic**: Tactile, rustic styling featuring a repeating parchment map with sea monsters (`map_bg.jpg`), tricorn hat illustration (`pirate_hat.svg`), clean cards, no emojis, no AI design tropes.
 
 ---
 
 ## 12. Hotspot Architecture, Decisions & Pi Configuration
 
-### Agreed Architectural Decisions (Session 2026-09-12)
+### Agreed Architectural Decisions (Session 2026-09-12 & 2026-09-13)
 
-1. **Hotspot Credentials & Single QR Code:**
+1. **Hotspot Credentials & Step 1 QR Code:**
    - **SSID**: `PirateHat`
    - **Password**: `treasure` (WPA2-PSK)
    - **QR Code Content**: `WIFI:S:PirateHat;T:WPA;P:treasure;;`
-   - **Rationale**: Scanning this single QR code via native iOS/Android cameras auto-joins with **1 tap** (zero manual password typing). Using WPA2 prevents OS "Unsecured Network" security warnings and stops phones from aggressively dropping the offline AP.
-   - **Printed on Badge**: Single QR code with text:
-     - Wi-Fi: `PirateHat`
-     - Password: `treasure`
-     - Browser: `192.168.4.1` (`pirate.box`)
-     - Strictly no emojis (clean, authentic typography).
+   - **Rationale**: Scanning this QR code via native iOS/Android cameras auto-joins with **1 tap** (zero manual password typing). Using WPA2 prevents OS "Unsecured Network" security warnings and stops phones from aggressively dropping the offline AP.
+   - **Printed on Badge**: Step 1 QR code with SSID (`PirateHat`) and Password (`treasure`) printed clearly right beneath the code.
 
 2. **Primary Address: `http://192.168.4.1` (over `pirate.box`):**
    - **Rationale**: Modern Android (Android 9+) has "Private DNS" (DNS-over-TLS to Google/Cloudflare over cellular) enabled by default. This causes custom domain names like `pirate.box` to fail on many devices. Direct IP `http://192.168.4.1` routes directly over the Wi-Fi interface and works 100% reliably regardless of private DNS or cellular data fallback. `pirate.box` remains active as a local DNS alias.
+   - **Printed on Badge**: Step 2 QR code with direct URL `http://192.168.4.1/` printed clearly right beneath the code.
 
-3. **Apple CNA Authentication & "Board the Ship" Flow (`/board`):**
-   - **Empirical Findings from Live Testing (Session 2026-09-12)**:
-     - When `/hotspot-detect.html` returned `Success` immediately, iOS suppressed the captive sheet completely, but showed *"This network does not have an internet connection"* in Wi-Fi settings without any prompt, leaving visitors stranded with no next step.
-     - When `/hotspot-detect.html` returned `portal.html`, the captive sheet popped up, but swiping up or cancelling caused iOS to drop `PirateHat` and fall back to the home network.
-   - **The Airline Solution: "Board the Ship" ➔ "Done"**:
-     - The server serves `portal.html` to both Apple and Android so the screen **pops up automatically** on both devices.
-     - On iPhone, the popup shows a prominent button: **[ BOARD THE SHIP ]** linking to `/board`.
-     - When tapped, `/board` returns Apple's official `Success` payload (`<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`).
-     - Apple CNA detects this response, turns the top-right button to a blue **"Done"**, and marks the connection as **authorized**.
-     - When the sheet closes, **iOS keeps the iPhone connected to `PirateHat`** instead of dropping back to the home Wi-Fi.
-     - The visitor then opens Safari, sails to `http://192.168.4.1/`, and downloads the track natively.
-     - On Android, the popup directly offers the 1-tap **[OPEN IN CHROME]** intent button.
-   - **CNA Deletion Protection**: If a download request is ever received from an Apple CNA User-Agent, `server.py` rejects it with HTTP 403, guaranteeing the server never unlinks a song while an iPhone drops the file.
+3. **Captive Probe Suppression & The Unified 2-Step Flow (Retiring `/board`):**
+   - **Previous Mistake (The CNA Modal Trap & `/board`)**:
+     - Earlier we attempted an airline-style flow where Apple CNA popped up with a `[ BOARD THE SHIP ]` button linking to `/board`.
+     - Tapping `/board` returned `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>` to turn Apple's top button to a blue "Done".
+     - *Why this failed:* Apple's CNA webview sandboxes the browser and completely disables WebKit file downloads. Users could not save `.m4a` tracks inside the CNA sheet. Furthermore, dismissing or canceling the sheet frequently triggered iOS to disconnect from `PirateHat` and fall back to cellular/home Wi-Fi.
+   - **Discovery & Solution (Probe Suppression + Badge Orchestration)**:
+     - Instead of forcing users into a crippled captive popup, we **suppress the captive popup entirely**:
+       - Apple CNA probes (`/hotspot-detect.html`, etc.) return immediate `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`.
+       - Android probes (`/generate_204`, etc.) return HTTP 204 No Content.
+     - Devices stay quietly connected to `PirateHat` on the local subnet without launching intrusive, crippled captive sheets.
+     - The physical printed badge acts as the UI orchestrator: Step 1 joins Wi-Fi, and Step 2 opens `http://192.168.4.1/` directly in the phone's native browser (Safari on iOS, Chrome on Android).
+     - Native browsers have complete file-saving delegates: plundering downloads `.m4a` cleanly to the device's storage.
+     - All legacy leftovers (`/board`, `/foe`, `/index.html`) have been removed.
 
 4. **Concurrency Policy:**
    - Generous single-serving rule: If two visitors click "Claim" on the exact same track at the exact same split-second, both receive the stream before the file is deleted. No heavy concurrency locking needed.
@@ -373,6 +371,21 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 
 6. **Boot Resilience (No Ethernet on-site):**
    - `pirate-server.service` runs on standard **Port 80** and orders `After=NetworkManager.service` (strictly omitting `network-online.target` / `NetworkManager-wait-online.service` to prevent 90-second boot stalls when operating portable on battery).
+
+7. **Song Location UX Notice (iOS Files vs Apple Music; Android Downloads):**
+   - **Decision**: Clearly inform the visitor where their plundered track went directly on the post-plunder confirmation modal (`chest.html`) and repeated on the farewell card (`farewell.html`).
+   - **Copy**: Short, clean, and non-disruptive:
+     - On iPhone: Check yer *Files* app &rarr; *Downloads* (not Apple Music).
+     - On Android: Check yer *Files* or *Downloads* app.
+   - **Rationale**: WebKit browser downloads on iOS are sandboxed to the Files app and cannot directly inject into the system Apple Music library. Repeating this short note removes user disorientation without adding intrusive modals.
+
+8. **Android "Wi-Fi Has No Internet" Ambient Notification Policy:**
+   - **Decision**: Keep the badge design clean, punchy, and organic; no extra warning text or clutter.
+   - **Rationale**: Probe suppression (`/generate_204` &rarr; HTTP 204) prevents full-screen captive popups. While some Android devices display a passive "Wi-Fi has no internet" system notification in the notification shade, visitors intuitively scan QR 2 to plunder. Adding defensive disclaimers to the physical badge would clutter the aesthetic and cause unnecessary anxiety.
+
+9. **Single-Serving Deletion Policy (Optimistic Immediate Deletion):**
+   - **Decision**: Maintain optimistic immediate deletion (`shutil.copyfileobj` then `os.unlink`) with no secondary backups, hidden recycle bins, or server complexity.
+   - **Rationale**: Simplicity and true single-serving scarcity. Preserves the authentic pirate romance that each track is the only copy on the seven seas.
 
 ### Pi System Setup Commands Executed / Required
 
@@ -453,9 +466,9 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 | **dnsmasq Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `address=/#/192.168.4.1`, `address=/pirate.box/192.168.4.1`, `dhcp-option=option:domain-name,pirate.box` |
 | **DHCP Leases** | `/var/lib/NetworkManager/dnsmasq-wlan0.leases` | DHCP range: `192.168.4.10` - `192.168.4.254` |
 | **Systemd Service** | `/etc/systemd/system/pirate-server.service` | Auto-starts `server.py` on Port 80, `After=NetworkManager.service` |
-| **Web Server** | `pirate_server/server.py` | Divergent OS handling: serves chest to Android captive webview; serves breakout to iOS CNA |
-| **Treasure Chest** | `pirate_server/templates/chest.html` | Searchable song list, plunder modal, direct browser download, farewell redirect |
-| **CNA Boarding Portal** | `pirate_server/templates/portal.html` | iOS CNA breakout page with `[ BOARD THE SHIP ]` linking to `/board` (Success payload) |
+| **Web Server** | `pirate_server/server.py` | Unified HTTP server: suppresses probes, serves chest at `/` and `/chest`, handles single-serving plundering |
+| **Treasure Chest** | `pirate_server/templates/chest.html` | Searchable song list, plunder confirmation modal, direct browser download, farewell redirect |
+| **Fallback Portal** | `pirate_server/templates/portal.html` | Fallback handoff page if captive client opens root; provides 1-tap copy link |
 | **Printable Badge** | `pirate_server/pirate_badge.html` | Offline self-contained base64 dual-QR badge (Step 1: Wi-Fi, Step 2: URL) |
 | **Badge Generator** | `pirate_server/generate_qr.py` | Generates 100% offline base64 QR badge HTML via `python3-qrcode` |
 | **Hotspot Helper** | `pirate_server/hotspot.sh` | Bash script for status, start, stop, and logs |
@@ -473,7 +486,7 @@ To avoid repeating previous investigations or reverting working configurations, 
 
 #### Experiment 2: Unconditional Apple Probe Spoofing (`<TITLE>Success</TITLE>`)
 - **Configuration:** `/hotspot-detect.html` immediately returned HTTP 200 `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`.
-- **iOS Outcome (FAILURE):** CNA modal was suppressed. However, because DHCP Option 3 was advertising the Pi as a Default Gateway to the internet, iOS tested WAN connectivity, detected no internet access, and showed a dead-end warning in Wi-Fi settings: *"This network does not have an internet connection"*. No popup appeared and the user had no next step.
+- **iOS Outcome (Evolution: Initial Confusion ➔ Ultimate Solution with 2-Step Badge):** CNA modal was suppressed. When tested initially *without* the 2-step badge, visitors had no prompt to open Safari and saw a warning in Wi-Fi settings: *"This network does not have an internet connection"*. However, once paired with the physical **2-Step Badge**, this became the winning solution: probe suppression keeps the Wi-Fi connection active without launching Apple's crippled CNA sheet, while Step 2 on the physical badge directs the user to open Safari directly to plunder!
 
 #### Experiment 3: Strategy A from Research (DHCP Option 3 Gateway Nullification)
 - **Configuration:** Added `dhcp-option=3` to `dnsmasq` to omit the default router option (RFC 2132).
@@ -484,30 +497,43 @@ To avoid repeating previous investigations or reverting working configurations, 
   3. Server logs showed 0 packets received.
   4. **Root Cause:** In modern Android, when a Wi-Fi link has no default gateway and fails connectivity checks, Android's `ConnectivityService` binds general applications (including Chrome) strictly to **Cellular Mobile Data**. Chrome attempts to route `192.168.4.1` out over the cellular carrier, where it is unroutable. Crucially, **only the system `CaptivePortalLogin` webview is explicitly socket-bound to the Wi-Fi interface**.
 
-#### The Definitive Divergent-Platform Architecture
-Because Android and iOS have opposite constraints:
-1. **Gateway Active:** Restore default gateway `192.168.4.1` in DHCP so both platforms recognize the local routing domain.
-2. **Android Path (`/generate_204`):** Serve the Treasure Chest (`chest.html`) directly inside Android's captive webview. Android users scan QR 1, the chest pops up automatically, and they plunder their track immediately in one seamless flow.
-3. **iOS Path (`/hotspot-detect.html`):** Serve `portal.html` with `[ BOARD THE SHIP ]`. When tapped, `/board` returns Apple's `<TITLE>Success</TITLE>`. This switches the top button from "Cancel" to **"Done"**. Tapping **"Done"** dismisses the modal **without disconnecting Wi-Fi**. The user can then open Safari (or scan QR 2) to plunder.
+### Simple Unified 2-QR Plan (Identical for Both iOS and Android)
 
-### Mobile User Experience (Converged Flow)
+**Core Principle:** No captive modals, no "Board the Ship" diversions, no intermediate screens. Exactly two steps for every visitor regardless of phone brand.
+
+1. **Badge Layout:**
+   - **QR Code 1 (Wi-Fi):** `WIFI:S:PirateHat;T:WPA;P:treasure;;`
+   - **QR Code 2 (Music Chest):** `http://192.168.4.1/`
+
+2. **User Workflow:**
+   - **Step 1:** Visitor points camera at QR 1 and taps **Join**. Phone associates with `PirateHat`.
+   - **Step 2:** Visitor points camera at QR 2 and taps **Open in Safari** (iOS) or **Open in Chrome** (Android).
+   - **Step 3:** Browser lands directly on the Treasure Chest (`chest.html`).
+   - **Step 4:** Visitor taps **Plunder**, the `.m4a` file downloads to the phone's native storage, and the track is deleted from the Pi.
+
+3. **Required Server State:**
+   - **Probes Suppressed:** All probe endpoints (`/hotspot-detect.html`, `/generate_204`, etc.) return immediate standard success (`200 OK` / `204 No Content`). No OS launches a captive sheet.
+   - **Root Web Delivery:** `http://192.168.4.1/` serves `chest.html` directly.
 
 ```
                     [Visitor Points Camera at Badge]
                                    │
                     ┌──────────────┴──────────────┐
                     ▼                             ▼
-           [Google Android]              [Apple iOS / iPhone]
+       [Step 1: Point at QR 1]       [Step 2: Point at QR 2]
                     │                             │
-       • Joins Wi-Fi via QR 1         • Joins Wi-Fi via QR 1
-       • Captive modal pops up        • CNA modal pops up
-       • Lands in chest.html          • Taps "BOARD THE SHIP"
-       • Plunders track directly      • Button changes to "Done"
-       • Done in 1 step!              • Taps "Done" (stays connected!)
-                    │                 • Opens Safari (or scans QR 2)
-                    │                 • Plunders track in Safari
+                    ▼                             ▼
+       [Tap: "Join 'PirateHat'"]     [Tap: "Open in Safari/Chrome"]
+                    │                             │
+                    ▼                             ▼
+       [Phone Joins Wi-Fi]           [Native Mobile Browser]
+       • No captive popup appears    • Real browser with full rights
+       • Stays quietly connected     • Lands directly in Treasure Chest
                     │                             │
                     └──────────────┬──────────────┘
+                                   │
+                                   ▼
+              [Browse, Search, and Plunder Track]
                                    │
                                    ▼
              [Track Deleted from Pi Single-Serving Vault]
@@ -516,11 +542,53 @@ Because Android and iOS have opposite constraints:
              [Visitor Redirected to 10-Min Farewell Page]
 ```
 
-### Media Metadata & Player Behavior on Mobile
-- **Packaging Format**: Standard `.m4a` container (MPEG-4 Audio) generated via `ffmpeg` remuxing the OTA AAC-LC stream with `-disposition:v:0 attached_pic`.
-- **Embedded Tags**: `title`, `artist`, `album`, and 200x200 JPEG cover art (`Stream #0:1: Video: mjpeg`).
-- **Android Built-in Quick Player**: The default download previewer in Files by Google is a bare audio scrubber that does not parse MP4 ID3/atom metadata tags. Once opened in **VLC for Android**, **YouTube Music**, or any standard player, full track title, artist name, and album artwork render immediately.
-- **iOS Files / QuickTime**: Plays natively; saving to the *Files* app preserves all embedded tags.
+### Deep Architectural Dive: Android vs. iOS Flow Breakdown & Edge Cases
+
+Why this setup is **harder than an in-flight airplane portal**:
+- **On an airplane:** The passenger turns on **Airplane Mode**. The cellular baseband radio is completely disabled. Every networking socket on the device is forced onto `wlan0`. Local DNS hijacking and mDNS (`piratehat.local`) work seamlessly because there is zero competing WAN network.
+- **At a live venue / Maker Faire:** The visitor has **active 5G/LTE cellular data** enabled simultaneously with Wi-Fi:
+  1. **DNS-over-TLS / Private DNS:** Modern Android (Android 9+) queries DNS over TLS to Google (`8.8.8.8`) or Cloudflare over the cellular radio. If a domain name (like `pirate.box` or `piratehat.local`) is used, Android tries to resolve it via cellular DoT, which immediately fails. **Solution:** Step 2 on the badge points directly to the numeric IP address (`http://192.168.4.1/`), completely eliminating DNS lookup dependencies.
+  2. **Cellular Fallback / Wi-Fi Assist:** Both iOS (Wi-Fi Assist) and Android (NetworkSwitch / ConnectivityService) will silently route HTTP traffic over cellular if the Wi-Fi connection is flagged as dead or unauthenticated.
+  3. **Probe Suppression:** By having the web server spoof Apple's `<TITLE>Success</TITLE>` and Android's HTTP `204 No Content`, the phone's operating system concludes that the Wi-Fi connection is valid, suppressing intrusive system modals and keeping the socket routes bound to `192.168.4.1`.
+
+#### Step-by-Step Platform Comparison Table
+
+| Phase | Apple iOS (iPhone / iPad) | Google Android (Pixel / Samsung) |
+| :--- | :--- | :--- |
+| **1. Scan Step 1 QR** | Native Camera detects Wi-Fi QR code (`WIFI:S:PirateHat;T:WPA;P:treasure;;`). Prompts *"Join 'PirateHat' Network"*. | Native Camera / Google Lens detects Wi-Fi QR code. Prompts *"Connect to PirateHat"*. |
+| **2. Association & Probe** | iPhone associates. `captiveagent` probes `captive.apple.com/hotspot-detect.html`. Server returns HTTP 200 `<TITLE>Success</TITLE>`. CNA popup is **suppressed**. | Phone associates. OS probes `connectivitycheck.gstatic.com/generate_204`. Server returns HTTP 204. `CaptivePortalLogin` webview is **suppressed**. |
+| **3. Ambient Connection Status** | iPhone displays Wi-Fi checkmark. If background WAN checks notice no route to internet, Wi-Fi icon may appear without error. | Status bar shows Wi-Fi icon. Some models may show a passive notification *"Wi-Fi has no internet access. Tap to stay connected"*. |
+| **4. Scan Step 2 QR** | Native Camera detects `http://192.168.4.1/`. Prompts *"Open in Safari"*. User taps banner. | Native Camera detects `http://192.168.4.1/`. Prompts *"Open in Chrome"*. User taps banner. |
+| **5. Chest Experience** | Safari opens full browser tab to `chest.html`. Full JavaScript, smooth scrolling, and live search active. | Chrome opens full browser tab to `chest.html`. Full JavaScript, smooth scrolling, and live search active. |
+| **6. Plunder Action** | User taps "PLUNDER" -> modal confirms -> taps "CLAIM & DOWNLOAD". Invisible link triggers single GET `/download`. | User taps "PLUNDER" -> modal confirms -> taps "CLAIM & DOWNLOAD". Invisible link triggers single GET `/download`. |
+| **7. Native File Download** | Safari intercepts `Content-Disposition: attachment` and prompts: *"Do you want to download '[Title].m4a'?"*. User taps **Download**. | Chrome intercepts attachment and immediately displays notification: *"Downloading file... [Open]"*. |
+| **8. Single-Serving Deletion** | Server finishes streaming the byte stream to client socket, then calls `os.unlink(full_path)`. Song disappears from chest. | Server finishes streaming the byte stream to client socket, then calls `os.unlink(full_path)`. Song disappears from chest. |
+| **9. File Destination** | File saved into the iOS **Files** app (`Downloads` folder). *(Note: iOS sandbox prevents web downloads from directly entering the Apple Music app library).* | File saved into Android **Files / Downloads** folder. Playable in VLC, YouTube Music, or Files. |
+| **10. Post-Plunder Flow** | Modal updates to *"BOOTY PLUNDERED!"* with song location notice (*Files* &rarr; *Downloads*, not Apple Music). User proceeds to `/farewell` with repeated song location note and forget-Wi-Fi instructions. | Modal updates to *"BOOTY PLUNDERED!"* with song location notice (*Files* / *Downloads* app). User proceeds to `/farewell` with repeated song location note and forget-Wi-Fi instructions. |
+
+---
+
+### Discoveries, Mistakes & Solutions Log
+
+1. **Mistake: Double-Download Race Condition in `chest.html`**
+   - *Symptom:* Clicking "CLAIM & DOWNLOAD" occasionally resulted in browser navigating to a raw 404 page: *"That treasure has already been plundered by another pirate!"*.
+   - *Root Cause:* `executePlunder()` fired `link.click()`, immediately followed 100ms later by `setTimeout(function() { window.location.href = downloadUrl; }, 100)`. Because the server streams and unlinks the file on the first request, the second request hit a deleted file, throwing a 404 and replacing the user's tab.
+   - *Solution:* Removed the redundant `window.location.href` timeout. A single click on the download anchor initiates the download cleanly in both Safari and Chrome while keeping the user on the page to view the plunder modal.
+
+2. **Mistake: Apple Captive Probe Leak via Host Header**
+   - *Symptom:* In rare cases, an iPhone would still pop up the restricted Apple CNA sheet despite probe suppression.
+   - *Root Cause:* Apple devices do not only query `/hotspot-detect.html`. When DNS hijacking is active, they may query root `/` with `Host: captive.apple.com`. Because previous server code only inspected `path`, requests to `/` with `Host: captive.apple.com` were treated as normal browser visits or routed to `portal.html`, signaling to iOS that a captive portal was present.
+   - *Solution:* Updated `handle_captive_probes()` in `server.py` to check both request `path` AND `Host` header against known Apple and Android probe domains (`captive.apple.com`, `airport.us`, `connectivitycheck.gstatic.com`, etc.). Probes now return expected `<TITLE>Success</TITLE>` or HTTP 204 regardless of request path.
+
+3. **Mistake: Zombie Template Files in Repository**
+   - *Symptom:* Deprecated files `templates/foe.html` and `templates/index.html` were stubbed with deprecation comments instead of being cleaned up.
+   - *Solution:* Removed unrouted template references. Root `/` serves `chest.html` directly, and CNA fallback uses `portal.html`.
+
+4. **Mistake: Over-Complicated Badge Layout**
+   - *Symptom:* Previous badge was "2 QR codes then a bunch of words below" with redundant credentials blocks, numbered rule lists, and camera instructions.
+   - *Solution:* Redesigned into a punchy, high-contrast 2-step card via `generate_qr.py`. Embedded self-contained vector pirate hat art, placed credentials directly beneath QR 1, placed the direct URL directly beneath QR 2, and stripped all bottom clutter.
+
+---
 
 ### Complete Operational Command Reference
 
@@ -534,4 +602,3 @@ Because Android and iOS have opposite constraints:
 | **Switch back to home Wi-Fi** | `./pirate_server/hotspot.sh stop` |
 | **Reactivate PirateHat hotspot** | `./pirate_server/hotspot.sh start` |
 | **Regenerate printable badge** | `python3 pirate_server/generate_qr.py` |
-

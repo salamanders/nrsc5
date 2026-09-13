@@ -14,25 +14,56 @@
       </div>
       
       <h1>PIRATE VESSEL RADIO</h1>
-      <p style="margin-bottom: 14px; font-size: 0.9rem; color: #6b5344;">Over-the-air digital radio recordings captured live aboard the vessel.</p>
+      <p style="margin-bottom: 12px; font-size: 0.95rem; color: #5c4331; line-height: 1.5;">
+        Ye are connected to the vessel's Wi-Fi network!
+      </p>
 
-      <!-- Android Flow: Single 1-tap button to launch real Chrome -->
-      <div id="androidFlow" style="display: none;">
-        <a href="intent://192.168.4.1/chest#Intent;scheme=http;action=android.intent.action.VIEW;end" class="btn btn-gold" style="padding: 16px; font-size: 1.15rem;">OPEN IN CHROME</a>
+      <div class="handoff-box">
+        <div class="handoff-title">To claim a track, open Safari or Chrome and go to:</div>
+        <div class="copy-row">
+          <input type="text" id="copyUrl" class="copy-input" value="http://192.168.4.1" readonly>
+          <button type="button" id="copyBtn" class="btn-copy" onclick="copyAddress()">Copy Link</button>
+        </div>
       </div>
 
-      <!-- iOS / Default Flow: Board the ship button to signal Apple Success and keep connection -->
-      <div id="iosFlow">
-        <a href="/board" class="btn btn-gold" style="padding: 16px; font-size: 1.15rem; margin-bottom: 12px;">BOARD THE SHIP</a>
-        <p style="font-size: 0.82rem; color: #6b5344; margin-bottom: 0;">Tap above, then tap <strong>Done</strong> at top-right to stay aboard the vessel.</p>
-      </div>
+      <p style="font-size: 0.85rem; color: #6b5344; margin: 0; line-height: 1.4;">
+        (Or scan <strong>Step 2</strong> on the captain's badge).<br>
+        Preview sheets do not allow saving audio files. Opening in your native browser ensures your track downloads straight to your device.
+      </p>
     </div>
   </div>
 
   <script>
-    if (/Android/.test(navigator.userAgent)) {
-      document.getElementById('androidFlow').style.display = 'block';
-      document.getElementById('iosFlow').style.display = 'none';
+    function copyAddress() {
+      const url = document.getElementById('copyUrl').value;
+      const btn = document.getElementById('copyBtn');
+
+      function showSuccess() {
+        btn.innerText = "Copied!";
+        btn.classList.add("copied");
+        setTimeout(function() {
+          btn.innerText = "Copy Link";
+          btn.classList.remove("copied");
+        }, 2500);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(showSuccess, fallback);
+      } else {
+        fallback();
+      }
+
+      function fallback() {
+        const input = document.getElementById('copyUrl');
+        input.select();
+        input.setSelectionRange(0, 99999);
+        try {
+          document.execCommand('copy');
+          showSuccess();
+        } catch (e) {
+          btn.innerText = "Select & Copy";
+        }
+      }
     }
   </script>
 </body>

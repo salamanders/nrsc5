@@ -2,159 +2,250 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pirate Vessel Badge</title>
   <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Georgia, serif;
       text-align: center;
-      padding: 24px;
+      padding: 24px 12px;
       background: #e8e2d5;
       color: #2b1d14;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
     .badge {
-      max-width: 680px;
+      max-width: 620px;
       margin: 0 auto;
       background: #fdfaf3;
-      border: 3px solid #4a3525;
+      border: 3px solid #382417;
       border-radius: 12px;
-      padding: 28px 24px;
-      box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+      padding: 24px 20px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .hat-wrapper {
+      width: 90px;
+      height: 68px;
+      margin: 0 auto 6px auto;
+    }
+    .hat-wrapper svg {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
     h1 {
       color: #8b1e1e;
-      margin: 0 0 6px 0;
+      margin: 0 0 4px 0;
       font-size: 1.8rem;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 1.5px;
     }
     p.lead {
       color: #5c4331;
-      font-size: 1.05rem;
-      margin: 0 0 24px 0;
+      font-size: 1rem;
+      margin: 0 0 20px 0;
       font-style: italic;
     }
     .qr-grid {
       display: flex;
       justify-content: center;
-      gap: 32px;
-      margin: 20px 0;
+      gap: 24px;
       flex-wrap: wrap;
     }
     .qr-card {
       flex: 1;
       min-width: 240px;
-      max-width: 290px;
+      max-width: 270px;
       background: #f5eedf;
       border: 2px solid #8c6f56;
-      border-radius: 8px;
-      padding: 16px;
+      border-radius: 10px;
+      padding: 16px 14px;
       box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
     .step-number {
       display: inline-block;
       background: #8b1e1e;
       color: #fff;
-      font-size: 0.85rem;
-      font-weight: 700;
-      padding: 3px 10px;
+      font-size: 0.8rem;
+      font-weight: 800;
+      padding: 3px 12px;
       border-radius: 12px;
       text-transform: uppercase;
-      margin-bottom: 8px;
+      letter-spacing: 0.8px;
+      margin-bottom: 6px;
     }
     .qr-card h2 {
       font-size: 1.15rem;
-      color: #382417;
+      color: #2b1d14;
       margin: 0 0 10px 0;
+      font-weight: 700;
     }
     .qr-container {
       background: #ffffff;
       border: 1px solid #c4b5a2;
       border-radius: 6px;
-      padding: 8px;
+      padding: 6px;
       display: inline-block;
-      margin-bottom: 10px;
+      margin-bottom: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
     }
     .qr-container img {
       display: block;
-      width: 200px;
-      height: 200px;
+      width: 190px;
+      height: 190px;
     }
-    .qr-desc {
-      font-size: 0.85rem;
-      color: #5c4331;
-      line-height: 1.4;
-      margin: 0;
-    }
-    .credentials {
+    .qr-details {
+      width: 100%;
       background: rgba(74, 53, 37, 0.08);
       border: 1px solid #c4b5a2;
       border-radius: 6px;
-      padding: 12px 18px;
-      margin: 24px 0 16px 0;
-      text-align: left;
+      padding: 10px 12px;
+      box-sizing: border-box;
       font-size: 0.92rem;
-      line-height: 1.7;
+      line-height: 1.6;
+      text-align: center;
     }
-    .credentials strong {
-      color: #382417;
+    .qr-details .detail-row {
+      margin: 2px 0;
     }
-    .rules {
-      text-align: left;
-      margin: 16px 0 0 0;
-      font-size: 0.88rem;
-      color: #4a3525;
-      line-height: 1.5;
+    .qr-details .lbl {
+      color: #5c4331;
+      font-weight: 500;
     }
-    .rules ol {
-      padding-left: 20px;
-      margin: 6px 0;
+    .qr-details .val {
+      color: #2b1d14;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 1rem;
+      font-weight: 700;
     }
-    .rules li {
-      margin-bottom: 4px;
+    .qr-details .url-val {
+      font-size: 0.95rem;
+      word-break: break-all;
+    }
+    .qr-details .subtext {
+      color: #7a6352;
+      font-size: 0.8rem;
+      margin-top: 3px;
     }
     @media print {
       body { background: #fff; padding: 0; }
-      .badge { box-shadow: none; border-color: #000; }
+      .badge { box-shadow: none; border-color: #000; max-width: 100%; page-break-inside: avoid; break-inside: avoid; }
+      .qr-grid { flex-wrap: nowrap; gap: 16px; }
+      .qr-card { max-width: 48%; page-break-inside: avoid; break-inside: avoid; }
     }
   </style>
 </head>
 <body>
   <div class="badge">
+    <div class="hat-wrapper">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <defs>
+    <radialGradient id="goldGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fff4b8"/>
+      <stop offset="60%" stop-color="#d4af37"/>
+      <stop offset="100%" stop-color="#8a6b18"/>
+    </radialGradient>
+    <linearGradient id="featherGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff3b30"/>
+      <stop offset="50%" stop-color="#b71c1c"/>
+      <stop offset="100%" stop-color="#560000"/>
+    </linearGradient>
+    <linearGradient id="hatGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2a2e35"/>
+      <stop offset="70%" stop-color="#15171b"/>
+      <stop offset="100%" stop-color="#0a0b0d"/>
+    </linearGradient>
+    <linearGradient id="antennaGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#e0e0e0"/>
+      <stop offset="50%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#9e9e9e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Feather Antenna behind hat -->
+  <path d="M 230 140 C 290 80 340 30 330 10 C 310 10 260 60 210 120 Z" fill="url(#featherGrad)" stroke="#400" stroke-width="2" />
+  <path d="M 230 140 C 280 80 325 20 330 10" stroke="#ff8a80" stroke-width="2" fill="none" />
+  <path d="M 250 115 L 275 100 M 270 90 L 300 80 M 290 65 L 318 55 M 310 40 L 328 30" stroke="#ffcdd2" stroke-width="1.5" />
+
+  <!-- RTL-SDR Antenna metallic mast tucked into feather -->
+  <line x1="220" y1="150" x2="335" y2="5" stroke="url(#antennaGrad)" stroke-width="3" stroke-linecap="round" />
+  <circle cx="335" cy="5" r="4" fill="#ffeb3b" stroke="#f57f17" stroke-width="1.5" />
+  <path d="M 330 -5 A 15 15 0 0 1 345 10" stroke="#ffeb3b" stroke-width="2" fill="none" opacity="0.8" stroke-linecap="round"/>
+  <path d="M 325 -12 A 25 25 0 0 1 352 15" stroke="#ffeb3b" stroke-width="2" fill="none" opacity="0.5" stroke-linecap="round"/>
+
+  <!-- Tricorn Pirate Hat Main Body -->
+  <path d="M 50 180 C 120 120 280 120 350 180 C 300 240 100 240 50 180 Z" fill="#0d0e11" />
+  <path d="M 120 180 C 130 110 270 110 280 180 Z" fill="url(#hatGrad)" />
+
+  <!-- Upturned Front Brim -->
+  <path d="M 40 190 C 100 150 160 140 200 175 C 240 140 300 150 360 190 C 320 230 80 230 40 190 Z" fill="url(#hatGrad)" stroke="#111" stroke-width="3" />
+
+  <!-- Gold Lace Trim -->
+  <path d="M 42 188 C 100 148 160 138 200 173 C 240 138 300 148 358 188" fill="none" stroke="url(#goldGlow)" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Skull and Crossbones Emblem -->
+  <g transform="translate(200, 195)">
+    <line x1="-28" y1="-18" x2="28" y2="18" stroke="#f0ede6" stroke-width="6" stroke-linecap="round" />
+    <line x1="28" y1="-18" x2="-28" y2="18" stroke="#f0ede6" stroke-width="6" stroke-linecap="round" />
+    <circle cx="-28" cy="-18" r="4" fill="#f0ede6" />
+    <circle cx="28" cy="18" r="4" fill="#f0ede6" />
+    <circle cx="28" cy="-18" r="4" fill="#f0ede6" />
+    <circle cx="-28" cy="18" r="4" fill="#f0ede6" />
+    <ellipse cx="0" cy="-6" rx="18" ry="16" fill="#f0ede6" />
+    <path d="M -9 6 L 9 6 L 7 14 L -7 14 Z" fill="#f0ede6" />
+    <ellipse cx="-6" cy="-6" rx="4" ry="5" fill="#15171b" />
+    <ellipse cx="6" cy="-6" rx="4" ry="5" fill="#15171b" />
+    <ellipse cx="-6" cy="-6" rx="5" ry="6" fill="#000" />
+    <line x1="-22" y1="-18" x2="10" y2="4" stroke="#000" stroke-width="2" />
+    <path d="M 0 -2 L -2 2 L 2 2 Z" fill="#15171b" />
+    <line x1="-4" y1="9" x2="-4" y2="13" stroke="#15171b" stroke-width="1.5" />
+    <line x1="0" y1="9" x2="0" y2="13" stroke="#15171b" stroke-width="1.5" />
+    <line x1="4" y1="9" x2="4" y2="13" stroke="#15171b" stroke-width="1.5" />
+  </g>
+
+  <!-- RTL-SDR Dongle Body -->
+  <rect x="200" y="150" width="22" height="36" rx="4" fill="#0277bd" stroke="#01579b" stroke-width="1.5" transform="rotate(25 210 168)" />
+  <text x="202" y="172" font-size="7" font-family="monospace" font-weight="bold" fill="#ffffff" transform="rotate(25 210 168)">SDR</text>
+  <circle cx="218" cy="154" r="2.5" fill="#4caf50" opacity="0.9" />
+</svg>
+    </div>
     <h1>PIRATE VESSEL RADIO</h1>
-    <p class="lead">Air-recorded broadcast tracks. Plunder one track per pirate.</p>
+    <p class="lead">Air-recorded broadcast tracks &bull; Plunder one song per pirate</p>
 
     <div class="qr-grid">
       <div class="qr-card">
         <span class="step-number">Step 1</span>
-        <h2>Join the Wi-Fi</h2>
+        <h2>Connect Wi-Fi</h2>
         <div class="qr-container">
           <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUoAAAFKAQAAAABTUiuoAAACWElEQVR4nO2bwW3kMAxFHyMDc5SBKSCl2B1sSVvTdmCVsh1YxwFk/D1IciY5BJMAzhhY8iCMoXf4AEGJpDgmHrT08igJjjrq6Atkazazmc2AzWxGsoG+NZxE63+ODkAoABh5RMlAENoJOS0A+XqYAEe/jLboiQWmNYg0AtMKNfLmwwU4+pANH76NeDNN6zZU5x0uwNHvovmit1/S+uMCHP3camw1J8WCABlgSr9WIArIxwlw9AsodyE0rUEfl2ZBWp6u1dGhRU+1gtIYENxM6bVwXzs/XaujSG/BpG5LLLTPNUhLlMfWGVAkFZqPaAejJPV6SwVwb50HDborq9KrZDObNUfloS+n0Pp/ozUntJb6XYuB1R2RrwLKoDQfJ8DRL6KbackDNsd26tVeBvFmZuMPCHD0UeuJRUELQS3pUNl3/d46D0rL+qA3Btk9WDf25elaHe3VcWwB1uKIniwucc/qn67V0f2s61dWq7KgF1298nJvPR9t3ppqHPVFK7ujeoC5t56PDpCvMvKIwUVGDLLpD7QNAPJQTqDV0fusr3Y1VnpEEdRDzbOMU6CtT1gtSv3yKnfNec8Jz4IO+6sWkA2leSiQR6gDG3nEJh0nwNFvZPCwd3DLXb3FtHq9dS406K3pLv29iGStyXtfNp9Cq6P7zFO+qDYGW5axmdm4+czTadB3M0/xZhBXPtxbSmM4TICj30XzANO6mc1RsjnejDQG2e/1hwQ4+rm9n3kStFndrZbNTAKl13IGrY6+AFuddW9PxLFgMy3BsBnwt+OzoOb/CHLU0UPQfyGDo1JmcrfVAAAAAElFTkSuQmCC" alt="Wi-Fi QR Code">
         </div>
-        <p class="qr-desc">Point phone camera at this code and tap <strong>Join 'PirateHat'</strong>.</p>
+        <div class="qr-details">
+          <div class="detail-row"><span class="lbl">Network:</span> <strong class="val">PirateHat</strong></div>
+          <div class="detail-row"><span class="lbl">Password:</span> <strong class="val">treasure</strong></div>
+        </div>
       </div>
 
       <div class="qr-card">
         <span class="step-number">Step 2</span>
-        <h2>Board the Vessel</h2>
+        <h2>Open Chest</h2>
         <div class="qr-container">
           <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASIAAAEiAQAAAAB1xeIbAAAB4ElEQVR4nO2aQY7jIBBFX42RssRSDpCj2Ee3j5IDjGSWkbD+LIAkrVFrZuPGsWHhxPAkfxFS/KJs4t9t/vUfEDSqUR9EBcttDPkCwVF6XS1dp6A6SVIJPj5io48wSJKWerrOQeXlDWgKrowFMxur6joR5SPMtwizue+pn9d1BipcZCPAoPgzT2wUkiLgH5ZjTnCAlzRV1XVsygGr5ZtwlQ3LNab7OX10VXSdgXLgX+lVRPPtYSLAe9K1V/WfTSEtXQktyW1GNPmYBlLftFf1n03luVfx8pp8fA5ADvp7Vf/xlH+YWQ9mtzLtk4+Y9SDdW167IRUc0t1ME52yxSGve7O+mq7DU5TjhE6QonwJN/lMocX7ragS7xfQ5KWcViVr30lTi/ebUWVLBRgW0ES5pHyr+ZxNqaeVTIFHYlg6QbiIYamn6+jU098/471UZrz8FG3db0Oht7a8uruyzba535J61a3IG26ylyOrMTR/vyn1pW413B02AikOzbdYTdfRqZRIGXTPE/vVmHsMwDTcXdyv+qNRyeRLuYzV70XX8agvtUEvIFzTP0CEi6yWrjNQae7fz+rTav/tSGWTSrrOQq3J5qS3ckZWy2mVHtbeEdmQ+qtuldNcyjfffE6jjkf9AYCHKZo3BoxuAAAAAElFTkSuQmCC" alt="URL QR Code">
         </div>
-        <p class="qr-desc">Point camera at this code and tap <strong>Open in Safari</strong> (or Chrome).</p>
+        <div class="qr-details">
+          <div class="detail-row"><span class="lbl">URL:</span> <strong class="val url-val">http://192.168.4.1/</strong></div>
+          <div class="subtext">Safari &bull; Chrome &bull; Browser</div>
+        </div>
       </div>
-    </div>
-
-    <div class="credentials">
-      <div><strong>Network:</strong> PirateHat &nbsp;|&nbsp; <strong>Password:</strong> treasure</div>
-      <div><strong>Direct Address:</strong> http://192.168.4.1/ &nbsp;<span style="color:#777;">(or http://pirate.box)</span></div>
-    </div>
-
-    <div class="rules">
-      <strong>Pirate Code:</strong>
-      <ol>
-        <li>Connect via Step 1. Your cellular signal and messaging remain active.</li>
-        <li>Open the vault via Step 2 in your native browser.</li>
-        <li>Browse and plunder your chosen track. Each song vanishes from the vault once claimed.</li>
-      </ol>
     </div>
   </div>
 </body>

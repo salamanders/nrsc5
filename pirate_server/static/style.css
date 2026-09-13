@@ -138,15 +138,6 @@ p {
   opacity: 0.9;
 }
 
-.btn-friend {
-  background: var(--green);
-  color: #ffffff;
-}
-
-.btn-foe {
-  background: var(--crimson);
-  color: #ffffff;
-}
 
 .btn-gold {
   background: var(--gold);
@@ -260,6 +251,8 @@ p {
   padding: 22px;
   width: 100%;
   max-width: 400px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   text-align: center;
 }
 

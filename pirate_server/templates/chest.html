@@ -103,7 +103,7 @@
       btn.innerText = "Plundering...";
       btn.disabled = true;
 
-      // Trigger download via link and direct location fallback
+      // Trigger download via invisible anchor with download attribute
       const downloadUrl = '/download?file=' + encodeURIComponent(selectedPath);
       const link = document.createElement('a');
       link.href = downloadUrl;
@@ -111,13 +111,17 @@
       document.body.appendChild(link);
       link.click();
       link.remove();
-      setTimeout(function() { window.location.href = downloadUrl; }, 100);
 
       // Update modal to show immediate feedback and smooth transition to farewell
       document.getElementById('modalCard').innerHTML = `
         <h2 style="color: var(--gold);">BOOTY PLUNDERED!</h2>
-        <p style="margin: 12px 0;">Yer song is downloadin' now to yer device's <strong>Downloads</strong> folder.</p>
-        <p style="font-size: 0.88rem; color: #5a422d; margin-bottom: 20px;">
+        <p style="margin: 8px 0 10px;">Yer song is downloadin' now to yer device.</p>
+        <div style="background: rgba(74, 53, 37, 0.08); border-radius: 4px; padding: 10px 12px; font-size: 0.85rem; color: var(--wood); margin-bottom: 12px; text-align: left;">
+          <strong>Where's my song?</strong><br>
+          • <strong>iPhone</strong>: Check yer <em>Files</em> app &rarr; <em>Downloads</em> (not Apple Music)<br>
+          • <strong>Android</strong>: Check yer <em>Files</em> or <em>Downloads</em> app
+        </div>
+        <p style="font-size: 0.85rem; color: #5a422d; margin-bottom: 16px;">
           This was the only copy on the seven seas! Once yer download finishes, sail onward:
         </p>
         <div class="btn-stack">

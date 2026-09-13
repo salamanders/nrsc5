@@ -34,3 +34,4 @@ support/*.aac
 support/sample
 support/compare_wav.py
 .clinerules
+nohup.out

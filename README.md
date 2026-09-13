@@ -9,7 +9,7 @@ To continuously record songs into tagged `.m4a` files with embedded album art:
 
 ```bash
 # Tune to frequency and program (e.g. 107.1 MHz, program 0) and record into ./recordings
-nrsc5 --record-songs ./recordings 107.1 0
+nrsc5 --record-songs ./recordings 98.5 1
 
 # Optional flags:
 #   --preroll <seconds>      (pre-roll buffer to preserve song intro; default: 2.5s)

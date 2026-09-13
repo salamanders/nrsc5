@@ -112,10 +112,25 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_captive_probes(self, path):
         """
-        Emulates vendor probe responses per Strategy A (RESEARCH.md) so
-        devices recognize connectivity and suppress captive modals.
+        Suppresses OS captive portal popups by returning expected success responses.
+        This allows devices (iOS & Android) to stay connected quietly without
+        spawning restricted captive sheets. The user then navigates directly
+        in Safari or Chrome to http://192.168.4.1/ via Step 2 QR code.
         """
-        if path in ("/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html"):
+        host = self.headers.get("Host", "").lower().split(":")[0]
+
+        # 1. iOS / Apple captive checks: spoof Success so iOS does not launch CNA sheet
+        apple_domains = {
+            "captive.apple.com", "airport.us", "www.airport.us",
+            "ibook.info", "www.ibook.info", "itools.info", "www.itools.info",
+            "thinkdifferent.us", "www.thinkdifferent.us",
+            "appleiphonecell.com", "www.appleiphonecell.com"
+        }
+        apple_paths = (
+            "/hotspot-detect.html", "/canonical.html",
+            "/library/test/success.html", "/success.html"
+        )
+        if path in apple_paths or host in apple_domains:
             data = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -125,14 +140,20 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
             return True
 
-        if path in ("/generate_204", "/gen_204") or path.endswith("/generate_204"):
+        # 2. Android probes: return HTTP 204 No Content so Android does not launch CaptivePortalLogin
+        android_domains = {
+            "connectivitycheck.gstatic.com", "connectivitycheck.android.com",
+            "clients3.google.com", "play.googleapis.com"
+        }
+        if path in ("/generate_204", "/gen_204") or path.endswith("/generate_204") or host in android_domains:
             self.send_response(204)
             self.send_header("Content-Length", "0")
             self.send_header("Connection", "close")
             self.end_headers()
             return True
 
-        if path in ("/connecttest.txt", "/ncsi.txt"):
+        # 3. Windows / Desktop probes
+        if path in ("/connecttest.txt", "/ncsi.txt") or host in ("www.msftconnecttest.com", "www.msftncsi.com"):
             data = b"Microsoft Connect Test"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -142,7 +163,8 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
             return True
 
-        if path == "/success.txt":
+        # 4. Firefox / Linux probes
+        if path in ("/success.txt",) or host in ("detectportal.firefox.com", "connectivity-check.ubuntu.com"):
             data = b"success\n"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -159,27 +181,16 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        # 1. Handle OS Captive Portal Probes (opens portal popup automatically)
+        # 1. Handle OS Captive Portal Probes (suppresses captive sheets)
         if self.handle_captive_probes(path):
             return
 
-        # 2. Boarding endpoint: returns Apple Success payload to authorize CNA sheet
-        if path == "/board":
-            data = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(data)
-            return
-
-        # 3. Static assets
+        # 2. Static assets
         if path.startswith("/static/"):
             self.serve_static(path[8:])
             return
 
-        # 4. Farewell page
+        # 3. Farewell page
         if path == "/farewell":
             html_page = self.render_template("farewell.html")
             self.send_html(html_page)
@@ -205,13 +216,13 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
             self.send_html(html_page)
             return
 
-        # Explicit portal test route
+        # 7. Explicit portal test route
         if path == "/portal":
             html_page = self.render_template("portal.html")
             self.send_html(html_page)
             return
 
-        # Printable badge route
+        # 8. Printable badge route
         if path == "/badge":
             badge_path = os.path.join(BASE_DIR, "pirate_badge.html")
             if os.path.isfile(badge_path):
@@ -221,7 +232,6 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 return
             self.send_error(404, "Badge template not found")
             return
-
 
         # 9. Download / Plunder endpoint
         if path == "/download":
