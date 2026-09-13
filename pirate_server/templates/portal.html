@@ -14,22 +14,17 @@
       </div>
       
       <h1>PIRATE VESSEL RADIO</h1>
-      <p style="margin-bottom: 12px; font-size: 0.9rem; color: #6b5344;">Over-the-air digital radio recordings captured live aboard the vessel.</p>
+      <p style="margin-bottom: 14px; font-size: 0.9rem; color: #6b5344;">Over-the-air digital radio recordings captured live aboard the vessel.</p>
 
-      <!-- Android Flow: Single 1-tap button to open real Chrome -->
+      <!-- Android Flow: Single 1-tap button to launch real Chrome -->
       <div id="androidFlow" style="display: none;">
-        <a href="intent://192.168.4.1/chest#Intent;scheme=http;action=android.intent.action.VIEW;end" class="btn btn-gold" style="padding: 16px; font-size: 1.1rem;">OPEN IN CHROME</a>
+        <a href="intent://192.168.4.1/chest#Intent;scheme=http;action=android.intent.action.VIEW;end" class="btn btn-gold" style="padding: 16px; font-size: 1.15rem;">OPEN IN CHROME</a>
       </div>
 
-      <!-- iOS / Default Flow: Single Copy Link box -->
+      <!-- iOS / Default Flow: Board the ship button to signal Apple Success and keep connection -->
       <div id="iosFlow">
-        <div class="handoff-box">
-          <div class="handoff-title">Copy link and open in Safari:</div>
-          <div class="copy-row">
-            <input type="text" id="copyUrl" class="copy-input" value="http://192.168.4.1" readonly>
-            <button type="button" id="copyBtn" class="btn-copy" onclick="copyAddress()">Copy Link</button>
-          </div>
-        </div>
+        <a href="/board" class="btn btn-gold" style="padding: 16px; font-size: 1.15rem; margin-bottom: 12px;">BOARD THE SHIP</a>
+        <p style="font-size: 0.82rem; color: #6b5344; margin-bottom: 0;">Tap above, then tap <strong>Done</strong> at top-right to stay aboard the vessel.</p>
       </div>
     </div>
   </div>
@@ -38,38 +33,6 @@
     if (/Android/.test(navigator.userAgent)) {
       document.getElementById('androidFlow').style.display = 'block';
       document.getElementById('iosFlow').style.display = 'none';
-    }
-
-    function copyAddress() {
-      const url = document.getElementById('copyUrl').value;
-      const btn = document.getElementById('copyBtn');
-
-      function showSuccess() {
-        btn.innerText = "Copied!";
-        btn.classList.add("copied");
-        setTimeout(function() {
-          btn.innerText = "Copy Link";
-          btn.classList.remove("copied");
-        }, 2500);
-      }
-
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(showSuccess, fallback);
-      } else {
-        fallback();
-      }
-
-      function fallback() {
-        const input = document.getElementById('copyUrl');
-        input.select();
-        input.setSelectionRange(0, 99999);
-        try {
-          document.execCommand('copy');
-          showSuccess();
-        } catch (e) {
-          btn.innerText = "Select & Copy";
-        }
-      }
     }
   </script>
 </body>

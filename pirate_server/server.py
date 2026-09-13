@@ -112,28 +112,16 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_captive_probes(self, path):
         """
-        Detects operating system captive portal probe requests and redirects them
-        cleanly to the landing page so the phone opens the captive prompt.
+        Detects operating system captive portal probe requests and serves
+        portal.html so the phone automatically displays the prompt on screen.
         """
-        # Apple CNA probes: Return Success token so iOS stays connected permanently without dropping
-        if path in ("/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html"):
-            data = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(data)
-            return True
+        is_probe = path in (
+            "/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html",
+            "/generate_204", "/gen_204",
+            "/connecttest.txt", "/ncsi.txt", "/success.txt", "/kindle-wifi/wifiredirect.html"
+        ) or path.endswith("/generate_204")
 
-        # Android / Google probes: Serve portal.html so the screen pops up with [OPEN IN CHROME]
-        if path == "/generate_204" or path == "/gen_204" or path.endswith("/generate_204"):
-            html_page = self.render_template("portal.html")
-            self.send_html(html_page)
-            return True
-
-        # Windows / Firefox / Kindle probes:
-        if path in ("/connecttest.txt", "/ncsi.txt", "/success.txt", "/kindle-wifi/wifiredirect.html"):
+        if is_probe:
             html_page = self.render_template("portal.html")
             self.send_html(html_page)
             return True
@@ -145,16 +133,27 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        # 1. Handle OS Captive Portal Probes (serves single-purpose exit handoff)
+        # 1. Handle OS Captive Portal Probes (opens portal popup automatically)
         if self.handle_captive_probes(path):
             return
 
-        # 2. Static assets
+        # 2. Boarding endpoint: returns Apple Success payload to authorize CNA sheet
+        if path == "/board":
+            data = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        # 3. Static assets
         if path.startswith("/static/"):
             self.serve_static(path[8:])
             return
 
-        # 3. Farewell page
+        # 4. Farewell page
         if path == "/farewell":
             html_page = self.render_template("farewell.html")
             self.send_html(html_page)

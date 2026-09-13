@@ -350,13 +350,18 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 2. **Primary Address: `http://192.168.4.1` (over `pirate.box`):**
    - **Rationale**: Modern Android (Android 9+) has "Private DNS" (DNS-over-TLS to Google/Cloudflare over cellular) enabled by default. This causes custom domain names like `pirate.box` to fail on many devices. Direct IP `http://192.168.4.1` routes directly over the Wi-Fi interface and works 100% reliably regardless of private DNS or cellular data fallback. `pirate.box` remains active as a local DNS alias.
 
-3. **Asymmetric Captive Strategy (Apple Success Spoof vs. Android Auto-Popup):**
+3. **Apple CNA Authentication & "Board the Ship" Flow (`/board`):**
    - **Empirical Findings from Live Testing (Session 2026-09-12)**:
-     - **Android Success**: Android's captive screen pops up automatically with the `[OPEN IN CHROME]` button. Chrome can even download directly from the captive webview (showing Chrome's standard "File can't be downloaded securely" prompt for plain HTTP; tapping "Keep" completes download). Android keeps the Wi-Fi connection intact.
-     - **iOS Auto-Disconnect Bug**: On iPhone, when Apple CNA pops up, leaving the window (swiping up or tapping cancel) causes Apple's Wi-Fi state machine to treat the captive network as abandoned. iOS immediately disconnects from `PirateHat` and reverts to the user's home Wi-Fi or cellular network, preventing Safari from ever reaching `192.168.4.1`.
-   - **Targeted Solution (Industry Standard: GoPro, DJI, IoT)**:
-     - **For Apple (`/hotspot-detect.html`)**: The server responds with Apple's official `Success` string: `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`. iOS marks the Wi-Fi as established, suppresses the broken CNA sheet, and **never drops the connection or reverts**. The iPhone user opens Safari, goes to `http://192.168.4.1/`, and downloads the track natively.
-     - **For Android (`/generate_204`)**: The server continues serving `portal.html` (HTTP 200). Android retains its zero-effort automatic screen pop-up with the `[OPEN IN CHROME]` button, bypassing the need for Android users to manually launch Chrome or type the IP.
+     - When `/hotspot-detect.html` returned `Success` immediately, iOS suppressed the captive sheet completely, but showed *"This network does not have an internet connection"* in Wi-Fi settings without any prompt, leaving visitors stranded with no next step.
+     - When `/hotspot-detect.html` returned `portal.html`, the captive sheet popped up, but swiping up or cancelling caused iOS to drop `PirateHat` and fall back to the home network.
+   - **The Airline Solution: "Board the Ship" ➔ "Done"**:
+     - The server serves `portal.html` to both Apple and Android so the screen **pops up automatically** on both devices.
+     - On iPhone, the popup shows a prominent button: **[ BOARD THE SHIP ]** linking to `/board`.
+     - When tapped, `/board` returns Apple's official `Success` payload (`<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`).
+     - Apple CNA detects this response, turns the top-right button to a blue **"Done"**, and marks the connection as **authorized**.
+     - When the sheet closes, **iOS keeps the iPhone connected to `PirateHat`** instead of dropping back to the home Wi-Fi.
+     - The visitor then opens Safari, sails to `http://192.168.4.1/`, and downloads the track natively.
+     - On Android, the popup directly offers the 1-tap **[OPEN IN CHROME]** intent button.
    - **CNA Deletion Protection**: If a download request is ever received from an Apple CNA User-Agent, `server.py` rejects it with HTTP 403, guaranteeing the server never unlinks a song while an iPhone drops the file.
 
 4. **Concurrency Policy:**
