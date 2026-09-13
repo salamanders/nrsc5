@@ -29,7 +29,7 @@ This document details all potential bugs, edge cases, failure modes, and archite
      Type=simple
      User=benjamin
      WorkingDirectory=/home/benjamin/nrsc5
-     Environment=NRSC5_FREQ=89.5
+     Environment=NRSC5_FREQ=98.5
      Environment=NRSC5_PROGRAM=1
      Environment=NRSC5_PREROLL=2.5
      # Clean quiet execution, streams directly into systemd journal
@@ -434,7 +434,7 @@ This document details all potential bugs, edge cases, failure modes, and archite
 
 ## 5. Pre-Faire Implementation Checklist
 
-1. [x] **1.1: Install `nrsc5-recorder.service`**: Systemd unit configured with `NRSC5_FREQ=89.5`, `NRSC5_PROGRAM=1` (HD2), `RestartSec=30`, and journald logging.
+1. [x] **1.1: Install `nrsc5-recorder.service`**: Systemd unit configured with `NRSC5_FREQ=98.5`, `NRSC5_PROGRAM=1` (HD2), `RestartSec=30`, and journald logging.
 2. [x] **1.2: Configure Aggressive DHCP Recycling**: Set `dhcp-range=...,2m` and `dhcp-lease-max=250` in `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf`.
 3. [x] **1.3: Software Station Management**: Add idle station reaper (`iw dev wlan0 station dump` > 45s deauth) and soft deauth 15s after `/farewell`.
 4. [x] **1.4: Volatile In-RAM Logging**: Enable `nrsc5 -q`, configure `/etc/systemd/journald.conf.d/00-pirate.conf` with `Storage=volatile`, and delete `nohup.out`.
