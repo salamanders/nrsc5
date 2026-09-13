@@ -2,20 +2,39 @@
 """
 Generates the dual-QR printable badge for the Pirate Hat:
 Step 1 QR: Wi-Fi Credentials (WIFI:S:PirateHat;T:WPA;P:treasure;;)
-Step 2 QR: Target Browser URL (http://192.168.4.1)
+Step 2 QR: Target Browser URL (http://192.168.4.1/)
+
+Generates 100% offline, self-contained base64 PNG images embedded in the HTML.
 """
 
-import sys
 import os
-import urllib.parse
+import sys
+import io
+import base64
+import qrcode
+
+def generate_base64_qr(data_text):
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=2,
+    )
+    qr.add_data(data_text)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
 
 def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", domain="pirate.box", output_html="pirate_badge.html"):
     wifi_str = f"WIFI:S:{ssid};T:WPA;P:{password};;"
     url_str = f"http://{ip}/"
 
-    # Google Charts API URLs for printable QR codes
-    wifi_qr_url = "https://chart.googleapis.com/chart?chs=260x260&cht=qr&chl=" + urllib.parse.quote(wifi_str)
-    url_qr_url = "https://chart.googleapis.com/chart?chs=260x260&cht=qr&chl=" + urllib.parse.quote(url_str)
+    # Generate offline base64 data URIs
+    wifi_qr_data = generate_base64_qr(wifi_str)
+    url_qr_data = generate_base64_qr(url_str)
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -147,7 +166,7 @@ def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", 
         <span class="step-number">Step 1</span>
         <h2>Join the Wi-Fi</h2>
         <div class="qr-container">
-          <img src="{wifi_qr_url}" alt="Wi-Fi QR Code">
+          <img src="{wifi_qr_data}" alt="Wi-Fi QR Code">
         </div>
         <p class="qr-desc">Point phone camera at this code and tap <strong>Join 'PirateHat'</strong>.</p>
       </div>
@@ -156,7 +175,7 @@ def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", 
         <span class="step-number">Step 2</span>
         <h2>Board the Vessel</h2>
         <div class="qr-container">
-          <img src="{url_qr_url}" alt="URL QR Code">
+          <img src="{url_qr_data}" alt="URL QR Code">
         </div>
         <p class="qr-desc">Point camera at this code and tap <strong>Open in Safari</strong> (or Chrome).</p>
       </div>
@@ -181,7 +200,7 @@ def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", 
 """
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print(f"[PIRATE] Generated dual-QR badge template: {output_html}")
+    print(f"[PIRATE] Generated offline dual-QR badge template: {output_html}")
 
 if __name__ == "__main__":
     out = os.path.join(os.path.dirname(__file__), "pirate_badge.html")
