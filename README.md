@@ -18,17 +18,23 @@ nrsc5 --record-songs ./recordings 107.1 0
 ```
 
 ### 2. Maker Faire Audio Hat Web Server (Single-Serving Plunder Server)
-To serve the recordings to visitors connecting to your hat's local Wi-Fi:
+To serve recordings to visitors connecting to your hat's local Wi-Fi:
 
 ```bash
-# Run on default port 8080:
+# Service management (auto-starts on boot on port 80):
+sudo systemctl status pirate-server
+sudo systemctl restart pirate-server
+sudo systemctl stop pirate-server
+sudo journalctl -u pirate-server -f
+
+# Hotspot management (NetworkManager on wlan0):
+./pirate_server/hotspot.sh status   # Show status & connected visitors
+./pirate_server/hotspot.sh stop     # Reconnect wlan0 to home Wi-Fi
+./pirate_server/hotspot.sh start    # Reactivate PirateHat hotspot
+./pirate_server/hotspot.sh logs     # Tail live plunder logs
+
+# Or run manually in foreground:
 python3 pirate_server/server.py
-
-# Or run on port 80 (standard HTTP without specifying port in browser):
-sudo PIRATE_PORT=80 python3 pirate_server/server.py
-
-# Custom recordings path:
-RECORDINGS_DIR=/path/to/recordings python3 pirate_server/server.py
 ```
 Each song downloaded is automatically deleted from disk after transfer to ensure single-copy distribution compliance.
 

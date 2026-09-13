@@ -405,6 +405,18 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
    [Install]
    WantedBy=multi-user.target
    ```
+
+   **Service Management Commands:**
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable pirate-server.service
+   sudo systemctl start pirate-server.service
+   sudo systemctl restart pirate-server
+   sudo systemctl status pirate-server
+   sudo systemctl stop pirate-server
+   sudo journalctl -u pirate-server -f
+   ```
+
 5. **Port 80 Capability for Python (Non-Root Execution):**
    ```bash
    sudo setcap 'cap_net_bind_service=+ep' $(readlink -f $(which python3))
@@ -450,3 +462,58 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 5. **Plunder & Delete**: Claiming a song initiates direct download of `.m4a` file, unlinks track from disk, and presents farewell screen.
 6. **Track Protection**: If `/download` is attempted from within Apple CNA, server rejects the request with HTTP 403, preserving the file on disk.
 7. **Offline Boot**: Pi boots on battery without Ethernet and brings up `PirateHotspot` and `pirate-server` without delay.
+
+### Expected Mobile User Experience (Flow Comparison)
+
+```
+                       [Visitor Points Camera at Badge QR]
+                                        │
+                                        ▼
+                     [Single Tap: "Join 'PirateHat' Network?"]
+                                        │
+                                        ▼
+                     [Phone Connects: 192.168.4.x via DHCP]
+                                        │
+                                        ▼
+                        [Captive Portal Prompt Opens]
+                         (No scrolling, single screen)
+                                        │
+            ┌───────────────────────────┴───────────────────────────┐
+            ▼                                                       ▼
+      [Apple iOS / iPhone]                                  [Google Android]
+            │                                                       │
+  • Captive sheet opens                                   • Captive window opens
+  • Tap "Copy Link" (copies 192.168.4.1)                  • Option A: Tap "OPEN IN CHROME"
+  • Open native Safari & paste link                         Option B: Tap "ENTER THE CHEST" directly
+  • Browse vault & search tracks                          • Browse vault & search tracks
+  • Tap "CLAIM & DOWNLOAD"                                • Tap "CLAIM & DOWNLOAD"
+  • Safari downloads .m4a to Files                        • Chrome prompts "Download unsecurely?" -> Keep
+            │                                                       │
+            └───────────────────────────┬───────────────────────────┘
+                                        │
+                                        ▼
+                   [Track Deleted from Pi Single-Serving Vault]
+                                        │
+                                        ▼
+                   [Visitor Redirected to 10-Min Farewell Page]
+```
+
+### Media Metadata & Player Behavior on Mobile
+- **Packaging Format**: Standard `.m4a` container (MPEG-4 Audio) generated via `ffmpeg` remuxing the OTA AAC-LC stream with `-disposition:v:0 attached_pic`.
+- **Embedded Tags**: `title`, `artist`, `album`, and 200x200 JPEG cover art (`Stream #0:1: Video: mjpeg`).
+- **Android Built-in Quick Player**: The default download previewer in Files by Google is a bare audio scrubber that does not parse MP4 ID3/atom metadata tags. Once opened in **VLC for Android**, **YouTube Music**, or any standard player, full track title, artist name, and album artwork render immediately.
+- **iOS Files / QuickTime**: Plays natively; saving to the *Files* app preserves all embedded tags.
+
+### Complete Operational Command Reference
+
+| Action | Command |
+| :--- | :--- |
+| **Check server status** | `sudo systemctl status pirate-server` |
+| **Restart server** | `sudo systemctl restart pirate-server` |
+| **Stop server** | `sudo systemctl stop pirate-server` |
+| **Tail live plunder logs** | `sudo journalctl -u pirate-server -f` |
+| **Check hotspot & visitors** | `./pirate_server/hotspot.sh status` |
+| **Switch back to home Wi-Fi** | `./pirate_server/hotspot.sh stop` |
+| **Reactivate PirateHat hotspot** | `./pirate_server/hotspot.sh start` |
+| **Regenerate printable badge** | `python3 pirate_server/generate_qr.py` |
+
