@@ -450,48 +450,64 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 | File / Component | Location | Role / Configuration |
 | :--- | :--- | :--- |
 | **Hotspot Profile** | `/etc/NetworkManager/system-connections/PirateHotspot.nmconnection` | SSID: `PirateHat`, WPA2: `treasure`, IP: `192.168.4.1/24`, `autoconnect=true` |
-| **dnsmasq Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `dhcp-option=3` (omits default gateway), `address=/#/192.168.4.1`, `address=/pirate.box/192.168.4.1` |
+| **dnsmasq Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `address=/#/192.168.4.1`, `address=/pirate.box/192.168.4.1`, `dhcp-option=option:domain-name,pirate.box` |
 | **DHCP Leases** | `/var/lib/NetworkManager/dnsmasq-wlan0.leases` | DHCP range: `192.168.4.10` - `192.168.4.254` |
 | **Systemd Service** | `/etc/systemd/system/pirate-server.service` | Auto-starts `server.py` on Port 80, `After=NetworkManager.service` |
-| **Web Server** | `pirate_server/server.py` | Single-serving plunder server, serves music chest directly at root `/` |
+| **Web Server** | `pirate_server/server.py` | Divergent OS handling: serves chest to Android captive webview; serves breakout to iOS CNA |
 | **Treasure Chest** | `pirate_server/templates/chest.html` | Searchable song list, plunder modal, direct browser download, farewell redirect |
-| **Dual-QR Badge** | `pirate_server/pirate_badge.html` | Printable badge template (QR 1: Wi-Fi, QR 2: `http://192.168.4.1/`) |
-| **Badge Generator** | `pirate_server/generate_qr.py` | Generates 2-QR badge HTML using Google Charts API or local `qrencode` |
+| **CNA Boarding Portal** | `pirate_server/templates/portal.html` | iOS CNA breakout page with `[ BOARD THE SHIP ]` linking to `/board` (Success payload) |
+| **Printable Badge** | `pirate_server/pirate_badge.html` | Offline self-contained base64 dual-QR badge (Step 1: Wi-Fi, Step 2: URL) |
+| **Badge Generator** | `pirate_server/generate_qr.py` | Generates 100% offline base64 QR badge HTML via `python3-qrcode` |
 | **Hotspot Helper** | `pirate_server/hotspot.sh` | Bash script for status, start, stop, and logs |
 
-### Verification & Testing Checklist
-1. **SSID Broadcast**: Phone detects `PirateHat` with WPA2 security.
-2. **Camera Auto-Join (QR 1)**: Scanning badge QR 1 prompts to join Wi-Fi with 1 tap (no typing).
-3. **Peripheral Mode Negotiation**: Phone connects to `192.168.4.x`. Because DHCP Option 3 (gateway) is omitted:
-   - No captive modal pops up on either iOS or Android.
-   - Outbound cellular data remains active on the user's phone for messaging/calls.
-   - No "no internet connection" disconnect triggers.
-4. **Browser Launch (QR 2)**: Scanning badge QR 2 prompts "Open in Safari" or "Open in Chrome" with 1 tap.
-5. **Real Browser Vault**: User lands directly in `chest.html` inside native Safari/Chrome with full filesystem and download rights.
-6. **Plunder & Delete**: Claiming a song initiates direct `.m4a` download, unlinks track from disk, and presents farewell screen.
-7. **Offline Boot**: Pi boots on battery without Ethernet and brings up `PirateHotspot` and `pirate-server` without delay.
+### Empirical Captive Portal & Mobile Interoperability Experiments (Why We Changed Course)
 
-### Mobile User Experience (Strategy A Dual-QR Flow)
+To avoid repeating previous investigations or reverting working configurations, here is the empirical record of tests conducted on live hardware:
+
+#### Experiment 1: Universal Wildcard Captive Portal with "Copy Link to Safari"
+- **Configuration:** Default gateway advertised as `192.168.4.1`. DNS hijacked to `192.168.4.1`. All vendor probes served `portal.html` instructing users to copy `http://192.168.4.1` and open Safari/Chrome.
+- **Android Outcome (SUCCESS):** Android launched `CaptivePortalLogin`. The user tapped "Plunder", Chrome download delegates initiated inside the webview, and the track (`Guns N' Roses - Welcome To The Jungle.m4a`) was downloaded to device storage and unlinked from the Pi.
+- **iOS Outcome (FAILURE):** Apple Captive Network Assistant (CNA) popped up. However:
+  1. WebKit file-download delegates are completely stripped in CNA (RFC/Apple security sandbox).
+  2. When the user tapped "Cancel" to switch to Safari, iOS marked the captive network as abandoned, immediately severed the Wi-Fi association, and reconnected to ambient home Wi-Fi (`benhill6`). Safari then failed because the phone was no longer on `PirateHat`.
+
+#### Experiment 2: Unconditional Apple Probe Spoofing (`<TITLE>Success</TITLE>`)
+- **Configuration:** `/hotspot-detect.html` immediately returned HTTP 200 `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`.
+- **iOS Outcome (FAILURE):** CNA modal was suppressed. However, because DHCP Option 3 was advertising the Pi as a Default Gateway to the internet, iOS tested WAN connectivity, detected no internet access, and showed a dead-end warning in Wi-Fi settings: *"This network does not have an internet connection"*. No popup appeared and the user had no next step.
+
+#### Experiment 3: Strategy A from Research (DHCP Option 3 Gateway Nullification)
+- **Configuration:** Added `dhcp-option=3` to `dnsmasq` to omit the default router option (RFC 2132).
+- **Theory:** Mobile devices would treat the Pi as an unrouted local peripheral (like a GoPro or Wi-Fi SD card), preserve cellular data, suppress captive modals, and allow native browsers to reach `http://192.168.4.1/` directly via QR 2.
+- **Android (Pixel) Outcome (FAILURE):**
+  1. Pixel connected without a captive modal.
+  2. Scanning QR 2 (`http://192.168.4.1/`) failed in Chrome with: *"The webpage at http://192.168.4.1/ might be temporarily down or moved permanently..."*.
+  3. Server logs showed 0 packets received.
+  4. **Root Cause:** In modern Android, when a Wi-Fi link has no default gateway and fails connectivity checks, Android's `ConnectivityService` binds general applications (including Chrome) strictly to **Cellular Mobile Data**. Chrome attempts to route `192.168.4.1` out over the cellular carrier, where it is unroutable. Crucially, **only the system `CaptivePortalLogin` webview is explicitly socket-bound to the Wi-Fi interface**.
+
+#### The Definitive Divergent-Platform Architecture
+Because Android and iOS have opposite constraints:
+1. **Gateway Active:** Restore default gateway `192.168.4.1` in DHCP so both platforms recognize the local routing domain.
+2. **Android Path (`/generate_204`):** Serve the Treasure Chest (`chest.html`) directly inside Android's captive webview. Android users scan QR 1, the chest pops up automatically, and they plunder their track immediately in one seamless flow.
+3. **iOS Path (`/hotspot-detect.html`):** Serve `portal.html` with `[ BOARD THE SHIP ]`. When tapped, `/board` returns Apple's `<TITLE>Success</TITLE>`. This switches the top button from "Cancel" to **"Done"**. Tapping **"Done"** dismisses the modal **without disconnecting Wi-Fi**. The user can then open Safari (or scan QR 2) to plunder.
+
+### Mobile User Experience (Converged Flow)
 
 ```
                     [Visitor Points Camera at Badge]
                                    │
                     ┌──────────────┴──────────────┐
                     ▼                             ▼
-       [Step 1: Point at QR 1]       [Step 2: Point at QR 2]
+           [Google Android]              [Apple iOS / iPhone]
                     │                             │
-                    ▼                             ▼
-       [Tap: "Join 'PirateHat'"]     [Tap: "Open in Safari/Chrome"]
-                    │                             │
-                    ▼                             ▼
-       [Local Peripheral Mode]        [Native Mobile Browser]
-       • No captive popup launches    • Full download permissions
-       • Cellular data stays active   • Lands directly in Vault
+       • Joins Wi-Fi via QR 1         • Joins Wi-Fi via QR 1
+       • Captive modal pops up        • CNA modal pops up
+       • Lands in chest.html          • Taps "BOARD THE SHIP"
+       • Plunders track directly      • Button changes to "Done"
+       • Done in 1 step!              • Taps "Done" (stays connected!)
+                    │                 • Opens Safari (or scans QR 2)
+                    │                 • Plunders track in Safari
                     │                             │
                     └──────────────┬──────────────┘
-                                   │
-                                   ▼
-              [Browse, Search, and Plunder Track]
                                    │
                                    ▼
              [Track Deleted from Pi Single-Serving Vault]
