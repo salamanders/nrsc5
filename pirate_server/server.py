@@ -127,9 +127,8 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         is_kindle_probe = path == "/kindle-wifi/wifiredirect.html"
 
         if is_apple_probe or is_google_probe or is_ms_probe or is_firefox_probe or is_kindle_probe:
-            self.send_response(302)
-            self.send_header("Location", f"http://{HOST}/")
-            self.end_headers()
+            html_page = self.render_template("portal.html")
+            self.send_html(html_page)
             return True
 
         return False
@@ -139,7 +138,7 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        # 1. Handle OS Captive Portal Probes
+        # 1. Handle OS Captive Portal Probes (serves single-purpose exit handoff)
         if self.handle_captive_probes(path):
             return
 
@@ -154,40 +153,32 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
             self.send_html(html_page)
             return
 
-        # 4. If already claimed booty, force to farewell screen (unless visiting /foe)
-        if self.has_plundered() and path not in ["/foe"]:
+        # 4. If already claimed booty, force to farewell screen
+        if self.has_plundered():
             self.send_response(302)
             self.send_header("Location", "/farewell")
             self.end_headers()
             return
 
-        # 5. Captive DNS spoof check: if accessed through an external hostname, redirect to IP
-        host_header = self.headers.get("Host", "").split(":")[0].lower()
-        valid_hosts = (HOST.lower(), "localhost", "127.0.0.1", "pirate.box", "pirate.local")
-        if host_header and host_header not in valid_hosts and path in ("/", "/index.html"):
-            self.send_response(302)
-            self.send_header("Location", f"http://{HOST}/")
-            self.end_headers()
-            return
-
-        # 6. Landing page (Friend or Foe & Browser Handoff)
-        if path == "/" or path == "/index.html":
-            html_page = self.render_template("index.html")
+        # 5. Captive assistant detection: if an Apple CNA popup hits root, show portal handoff
+        if self.is_cna_client() and path not in ["/download"]:
+            html_page = self.render_template("portal.html")
             self.send_html(html_page)
             return
 
-        # 7. Foe page
-        if path == "/foe":
-            html_page = self.render_template("foe.html")
-            self.send_html(html_page)
-            return
-
-        # 8. Treasure chest song list
-        if path == "/chest":
+        # 6. Real browser in Safari or Chrome: go straight to the Treasure Chest!
+        if path in ["/", "/index.html", "/chest"]:
             songs = scan_songs()
             html_page = self.render_template("chest.html", {"songs": songs})
             self.send_html(html_page)
             return
+
+        # Explicit portal test route
+        if path == "/portal":
+            html_page = self.render_template("portal.html")
+            self.send_html(html_page)
+            return
+
 
         # 9. Download / Plunder endpoint
         if path == "/download":
