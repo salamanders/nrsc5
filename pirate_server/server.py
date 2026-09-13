@@ -112,18 +112,44 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_captive_probes(self, path):
         """
-        Detects operating system captive portal probe requests and serves
-        portal.html so the phone automatically displays the prompt on screen.
+        Emulates vendor probe responses per Strategy A (RESEARCH.md) so
+        devices recognize connectivity and suppress captive modals.
         """
-        is_probe = path in (
-            "/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html",
-            "/generate_204", "/gen_204",
-            "/connecttest.txt", "/ncsi.txt", "/success.txt", "/kindle-wifi/wifiredirect.html"
-        ) or path.endswith("/generate_204")
+        if path in ("/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html"):
+            data = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+            return True
 
-        if is_probe:
-            html_page = self.render_template("portal.html")
-            self.send_html(html_page)
+        if path in ("/generate_204", "/gen_204") or path.endswith("/generate_204"):
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            return True
+
+        if path in ("/connecttest.txt", "/ncsi.txt"):
+            data = b"Microsoft Connect Test"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+
+        if path == "/success.txt":
+            data = b"success\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
             return True
 
         return False
@@ -183,6 +209,17 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         if path == "/portal":
             html_page = self.render_template("portal.html")
             self.send_html(html_page)
+            return
+
+        # Printable badge route
+        if path == "/badge":
+            badge_path = os.path.join(BASE_DIR, "pirate_badge.html")
+            if os.path.isfile(badge_path):
+                with open(badge_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.send_html(content)
+                return
+            self.send_error(404, "Badge template not found")
             return
 
 

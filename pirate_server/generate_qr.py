@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Generates the single-QR printable badge for the Pirate Hat:
-Wi-Fi Credentials: WIFI:S:PirateHat;T:WPA;P:treasure;;
-Directs visitors to open: http://192.168.4.1
+Generates the dual-QR printable badge for the Pirate Hat:
+Step 1 QR: Wi-Fi Credentials (WIFI:S:PirateHat;T:WPA;P:treasure;;)
+Step 2 QR: Target Browser URL (http://192.168.4.1)
 """
 
 import sys
@@ -11,11 +11,11 @@ import urllib.parse
 
 def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", domain="pirate.box", output_html="pirate_badge.html"):
     wifi_str = f"WIFI:S:{ssid};T:WPA;P:{password};;"
-    url_str = f"http://{ip}"
+    url_str = f"http://{ip}/"
 
-    # Google Charts API URL for printable QR code when connected,
-    # plus local qrencode instructions for fully offline printing on Pi
-    wifi_qr_url = "https://chart.googleapis.com/chart?chs=320x320&cht=qr&chl=" + urllib.parse.quote(wifi_str)
+    # Google Charts API URLs for printable QR codes
+    wifi_qr_url = "https://chart.googleapis.com/chart?chs=260x260&cht=qr&chl=" + urllib.parse.quote(wifi_str)
+    url_qr_url = "https://chart.googleapis.com/chart?chs=260x260&cht=qr&chl=" + urllib.parse.quote(url_str)
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -23,48 +23,157 @@ def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", 
   <meta charset="utf-8">
   <title>Pirate Vessel Badge</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background: #f0f0f0; }}
-    .badge {{ width: 380px; margin: 0 auto; background: #fdfaf3; border: 3px solid #4a3525; border-radius: 10px; padding: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }}
-    h1 {{ color: #8b1e1e; margin-bottom: 6px; font-size: 1.5rem; text-transform: uppercase; letter-spacing: 0.5px; }}
-    p.lead {{ color: #4a3525; font-size: 0.95rem; margin-top: 0; margin-bottom: 16px; line-height: 1.4; }}
-    .qr-container {{ margin: 16px auto; width: 240px; text-align: center; }}
-    .qr-container img {{ width: 230px; height: 230px; border: 2px solid #382417; border-radius: 8px; background: #fff; padding: 6px; }}
-    .credentials {{ background: rgba(74, 53, 37, 0.08); border: 1px solid #c4b5a2; border-radius: 6px; padding: 12px; margin: 16px 0; text-align: left; font-size: 0.9rem; line-height: 1.6; color: #2b1d14; }}
-    .credentials strong {{ color: #382417; }}
-    .instructions {{ text-align: left; margin: 14px 0; font-size: 0.88rem; color: #4a3525; line-height: 1.5; }}
-    .instructions ol {{ padding-left: 20px; margin: 6px 0; }}
-    .instructions li {{ margin-bottom: 4px; }}
-    .note {{ background: #fff3cd; border: 1px solid #ffeeba; padding: 10px; border-radius: 6px; font-size: 0.78rem; text-align: left; color: #533f03; margin-top: 14px; line-height: 1.4; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Georgia, serif;
+      text-align: center;
+      padding: 24px;
+      background: #e8e2d5;
+      color: #2b1d14;
+    }}
+    .badge {{
+      max-width: 680px;
+      margin: 0 auto;
+      background: #fdfaf3;
+      border: 3px solid #4a3525;
+      border-radius: 12px;
+      padding: 28px 24px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+    }}
+    h1 {{
+      color: #8b1e1e;
+      margin: 0 0 6px 0;
+      font-size: 1.8rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }}
+    p.lead {{
+      color: #5c4331;
+      font-size: 1.05rem;
+      margin: 0 0 24px 0;
+      font-style: italic;
+    }}
+    .qr-grid {{
+      display: flex;
+      justify-content: center;
+      gap: 32px;
+      margin: 20px 0;
+      flex-wrap: wrap;
+    }}
+    .qr-card {{
+      flex: 1;
+      min-width: 240px;
+      max-width: 290px;
+      background: #f5eedf;
+      border: 2px solid #8c6f56;
+      border-radius: 8px;
+      padding: 16px;
+      box-sizing: border-box;
+    }}
+    .step-number {{
+      display: inline-block;
+      background: #8b1e1e;
+      color: #fff;
+      font-size: 0.85rem;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }}
+    .qr-card h2 {{
+      font-size: 1.15rem;
+      color: #382417;
+      margin: 0 0 10px 0;
+    }}
+    .qr-container {{
+      background: #ffffff;
+      border: 1px solid #c4b5a2;
+      border-radius: 6px;
+      padding: 8px;
+      display: inline-block;
+      margin-bottom: 10px;
+    }}
+    .qr-container img {{
+      display: block;
+      width: 200px;
+      height: 200px;
+    }}
+    .qr-desc {{
+      font-size: 0.85rem;
+      color: #5c4331;
+      line-height: 1.4;
+      margin: 0;
+    }}
+    .credentials {{
+      background: rgba(74, 53, 37, 0.08);
+      border: 1px solid #c4b5a2;
+      border-radius: 6px;
+      padding: 12px 18px;
+      margin: 24px 0 16px 0;
+      text-align: left;
+      font-size: 0.92rem;
+      line-height: 1.7;
+    }}
+    .credentials strong {{
+      color: #382417;
+    }}
+    .rules {{
+      text-align: left;
+      margin: 16px 0 0 0;
+      font-size: 0.88rem;
+      color: #4a3525;
+      line-height: 1.5;
+    }}
+    .rules ol {{
+      padding-left: 20px;
+      margin: 6px 0;
+    }}
+    .rules li {{
+      margin-bottom: 4px;
+    }}
+    @media print {{
+      body {{ background: #fff; padding: 0; }}
+      .badge {{ box-shadow: none; border-color: #000; }}
+    }}
   </style>
 </head>
 <body>
   <div class="badge">
     <h1>PIRATE VESSEL RADIO</h1>
-    <p class="lead">Scan with your camera to board the vessel and plunder one radio capture.</p>
-    
-    <div class="qr-container">
-      <img src="{wifi_qr_url}" alt="Join Wi-Fi QR Code">
+    <p class="lead">Air-recorded broadcast tracks. Plunder one track per pirate.</p>
+
+    <div class="qr-grid">
+      <div class="qr-card">
+        <span class="step-number">Step 1</span>
+        <h2>Join the Wi-Fi</h2>
+        <div class="qr-container">
+          <img src="{wifi_qr_url}" alt="Wi-Fi QR Code">
+        </div>
+        <p class="qr-desc">Point phone camera at this code and tap <strong>Join 'PirateHat'</strong>.</p>
+      </div>
+
+      <div class="qr-card">
+        <span class="step-number">Step 2</span>
+        <h2>Board the Vessel</h2>
+        <div class="qr-container">
+          <img src="{url_qr_url}" alt="URL QR Code">
+        </div>
+        <p class="qr-desc">Point camera at this code and tap <strong>Open in Safari</strong> (or Chrome).</p>
+      </div>
     </div>
 
     <div class="credentials">
-      <div><strong>Wi-Fi Network:</strong> {ssid}</div>
-      <div><strong>Password:</strong> {password}</div>
-      <div><strong>Browser Address:</strong> {url_str} <span style="color:#666;">({domain})</span></div>
+      <div><strong>Network:</strong> {ssid} &nbsp;|&nbsp; <strong>Password:</strong> {password}</div>
+      <div><strong>Direct Address:</strong> {url_str} &nbsp;<span style="color:#777;">(or http://{domain})</span></div>
     </div>
 
-    <div class="instructions">
-      <strong>How to Board:</strong>
+    <div class="rules">
+      <strong>Pirate Code:</strong>
       <ol>
-        <li>Scan the QR code with your phone camera to join the Wi-Fi.</li>
-        <li>When the prompt opens, copy the link and paste into Safari (or Chrome).</li>
-        <li>Browse the vault, choose your track, and plunder!</li>
+        <li>Connect via Step 1. Your cellular signal and messaging remain active.</li>
+        <li>Open the vault via Step 2 in your native browser.</li>
+        <li>Browse and plunder your chosen track. Each song vanishes from the vault once claimed.</li>
       </ol>
-    </div>
-
-    <div class="note">
-      <strong>Offline QR Generation (on Pi):</strong><br>
-      <code>sudo apt install -y qrencode</code><br>
-      <code>qrencode -s 8 -o wifi_qr.png "{wifi_str}"</code>
     </div>
   </div>
 </body>
@@ -72,7 +181,7 @@ def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", 
 """
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print(f"[PIRATE] Generated single-QR badge template: {output_html}")
+    print(f"[PIRATE] Generated dual-QR badge template: {output_html}")
 
 if __name__ == "__main__":
     out = os.path.join(os.path.dirname(__file__), "pirate_badge.html")

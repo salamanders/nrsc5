@@ -450,61 +450,54 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 | File / Component | Location | Role / Configuration |
 | :--- | :--- | :--- |
 | **Hotspot Profile** | `/etc/NetworkManager/system-connections/PirateHotspot.nmconnection` | SSID: `PirateHat`, WPA2: `treasure`, IP: `192.168.4.1/24`, `autoconnect=true` |
-| **Captive DNS Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `address=/#/192.168.4.1`, `address=/pirate.box/192.168.4.1`, `dhcp-option=option:domain-name,pirate.box` |
+| **dnsmasq Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `dhcp-option=3` (omits default gateway), `address=/#/192.168.4.1`, `address=/pirate.box/192.168.4.1` |
 | **DHCP Leases** | `/var/lib/NetworkManager/dnsmasq-wlan0.leases` | DHCP range: `192.168.4.10` - `192.168.4.254` |
 | **Systemd Service** | `/etc/systemd/system/pirate-server.service` | Auto-starts `server.py` on Port 80, `After=NetworkManager.service` |
-| **Web Server** | `pirate_server/server.py` | Single-serving plunder server, captive probe redirects, CNA download protection |
-| **Landing & Handoff** | `pirate_server/templates/index.html` | Airline-style copy box (`http://192.168.4.1`), JS clipboard copy, Android Chrome intent |
-| **Treasure Chest** | `pirate_server/templates/chest.html` | Searchable song list, plunder modal, direct location download fallback, CNA notice |
-| **Single-QR Badge** | `pirate_server/pirate_badge.html` | Printable physical badge template (Single QR: `WIFI:S:PirateHat;T:WPA;P:treasure;;`) |
-| **Badge Generator** | `pirate_server/generate_qr.py` | Generates printable badge HTML using Google Charts API or local `qrencode` |
+| **Web Server** | `pirate_server/server.py` | Single-serving plunder server, serves music chest directly at root `/` |
+| **Treasure Chest** | `pirate_server/templates/chest.html` | Searchable song list, plunder modal, direct browser download, farewell redirect |
+| **Dual-QR Badge** | `pirate_server/pirate_badge.html` | Printable badge template (QR 1: Wi-Fi, QR 2: `http://192.168.4.1/`) |
+| **Badge Generator** | `pirate_server/generate_qr.py` | Generates 2-QR badge HTML using Google Charts API or local `qrencode` |
 | **Hotspot Helper** | `pirate_server/hotspot.sh` | Bash script for status, start, stop, and logs |
 
 ### Verification & Testing Checklist
 1. **SSID Broadcast**: Phone detects `PirateHat` with WPA2 security.
-2. **Camera Auto-Join**: Scanning badge QR code connects with 1 tap (no typing).
-3. **Captive Popup**: Phone automatically opens captive prompt showing the Pirate Vessel welcome card and the **Copy Link** button.
-4. **Handoff to Safari/Chrome**:
-   - iOS: Tapping **Copy Link** copies `http://192.168.4.1`; opening Safari routes to the vault.
-   - Android: Tapping **OPEN IN CHROME** directly launches Google Chrome via Android Intent.
-5. **Plunder & Delete**: Claiming a song initiates direct download of `.m4a` file, unlinks track from disk, and presents farewell screen.
-6. **Track Protection**: If `/download` is attempted from within Apple CNA, server rejects the request with HTTP 403, preserving the file on disk.
+2. **Camera Auto-Join (QR 1)**: Scanning badge QR 1 prompts to join Wi-Fi with 1 tap (no typing).
+3. **Peripheral Mode Negotiation**: Phone connects to `192.168.4.x`. Because DHCP Option 3 (gateway) is omitted:
+   - No captive modal pops up on either iOS or Android.
+   - Outbound cellular data remains active on the user's phone for messaging/calls.
+   - No "no internet connection" disconnect triggers.
+4. **Browser Launch (QR 2)**: Scanning badge QR 2 prompts "Open in Safari" or "Open in Chrome" with 1 tap.
+5. **Real Browser Vault**: User lands directly in `chest.html` inside native Safari/Chrome with full filesystem and download rights.
+6. **Plunder & Delete**: Claiming a song initiates direct `.m4a` download, unlinks track from disk, and presents farewell screen.
 7. **Offline Boot**: Pi boots on battery without Ethernet and brings up `PirateHotspot` and `pirate-server` without delay.
 
-### Expected Mobile User Experience (Flow Comparison)
+### Mobile User Experience (Strategy A Dual-QR Flow)
 
 ```
-                       [Visitor Points Camera at Badge QR]
-                                        │
-                                        ▼
-                     [Single Tap: "Join 'PirateHat' Network?"]
-                                        │
-                                        ▼
-                     [Phone Connects: 192.168.4.x via DHCP]
-                                        │
-                                        ▼
-                     [Captive Portal Opens: portal.html]
-                     (Exactly ONE thing to do: Get Out)
-                                         │
-            ┌───────────────────────────┴───────────────────────────┐
-            ▼                                                       ▼
-      [Apple iOS / iPhone]                                  [Google Android]
-            │                                                       │
-  • /hotspot-detect.html returns Success                 • /generate_204 returns portal.html
-  • iOS suppresses CNA & stays connected                 • Screen pops up automatically on phone
-  • Open Safari to http://192.168.4.1                    • Tap "OPEN IN CHROME" button
-            │                                                       │
-            └───────────────────────────┬───────────────────────────┘
-                                        │
-                                        ▼
-                  [Real Browser Lands Directly in Chest]
-                       (Browse, search, and plunder)
-                                        │
-                                        ▼
-                   [Track Deleted from Pi Single-Serving Vault]
-                                        │
-                                        ▼
-                   [Visitor Redirected to 10-Min Farewell Page]
+                    [Visitor Points Camera at Badge]
+                                   │
+                    ┌──────────────┴──────────────┐
+                    ▼                             ▼
+       [Step 1: Point at QR 1]       [Step 2: Point at QR 2]
+                    │                             │
+                    ▼                             ▼
+       [Tap: "Join 'PirateHat'"]     [Tap: "Open in Safari/Chrome"]
+                    │                             │
+                    ▼                             ▼
+       [Local Peripheral Mode]        [Native Mobile Browser]
+       • No captive popup launches    • Full download permissions
+       • Cellular data stays active   • Lands directly in Vault
+                    │                             │
+                    └──────────────┬──────────────┘
+                                   │
+                                   ▼
+              [Browse, Search, and Plunder Track]
+                                   │
+                                   ▼
+             [Track Deleted from Pi Single-Serving Vault]
+                                   │
+                                   ▼
+             [Visitor Redirected to 10-Min Farewell Page]
 ```
 
 ### Media Metadata & Player Behavior on Mobile
