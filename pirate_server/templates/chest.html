@@ -12,6 +12,10 @@
       <h1>THE TREASURE CHEST</h1>
       <p>Pick a song captured live off the air. There is only one copy—once plundered, it vanishes from the vessel.</p>
 
+      <div id="cnaWarning" style="display: none; background: #fff3cd; border: 1px solid #c4b5a2; color: #4a3525; padding: 10px; border-radius: 4px; font-size: 0.85rem; margin-bottom: 12px; text-align: left;">
+        <strong>Notice:</strong> If viewing in a preview popup window, copy <code>http://192.168.4.1</code> into Safari or Chrome to save your track.
+      </div>
+
       <input type="text" id="searchBox" class="search-box" placeholder="Search artist or title..." autocomplete="off">
 
       <ul id="songList" class="song-list">
@@ -103,7 +107,7 @@
       btn.innerText = "Plundering...";
       btn.disabled = true;
 
-      // Trigger download via link to preserve native mobile download manager without interrupting page
+      // Trigger download via link and direct location fallback
       const downloadUrl = '/download?file=' + encodeURIComponent(selectedPath);
       const link = document.createElement('a');
       link.href = downloadUrl;
@@ -111,6 +115,7 @@
       document.body.appendChild(link);
       link.click();
       link.remove();
+      setTimeout(function() { window.location.href = downloadUrl; }, 100);
 
       // Update modal to show immediate feedback and smooth transition to farewell
       document.getElementById('modalCard').innerHTML = `
@@ -123,6 +128,12 @@
           <a href="/farewell" class="btn btn-gold">PROCEED TO FAREWELL</a>
         </div>
       `;
+    }
+
+    // Detect if inside an Apple captive webview and show notice
+    if ((/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.indexedDB) || navigator.userAgent.includes("CaptiveNetworkSupport")) {
+      const warn = document.getElementById('cnaWarning');
+      if (warn) warn.style.display = 'block';
     }
   </script>
 </body>

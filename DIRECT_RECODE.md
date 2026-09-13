@@ -321,7 +321,7 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 
 ### Design & Mechanics
 - **Physical Context**: Embedded inside a Maker Faire Audio Hat running on a Raspberry Pi with an RTL-SDR dongle disguised as a feather.
-- **Access Flow**: Visitors connect to the offline Wi-Fi AP (`PirateHat`, no password) $\rightarrow$ browse to `http://192.168.4.1`.
+- **Access Flow**: Visitors connect to the offline Wi-Fi AP (`PirateHat`, password: `treasure`) $\rightarrow$ captive popup directs them to copy link $\rightarrow$ browse in Safari/Chrome to `http://192.168.4.1` (or `pirate.box`).
 - **Pages**:
   - `/` ("ARE YE FRIEND OR BE YE FOE?").
   - `/foe` ("Walk the plank" with repentance button).
@@ -330,9 +330,123 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
   - `/farewell` (Explains download location, tells visitor to disconnect Wi-Fi and sail the high seas for 10 minutes before plundering again).
 - **Design Aesthetic**: Tactile, rustic styling featuring a repeating parchment map with sea monsters (`map_bg.jpg`), tricorn hat illustration (`pirate_hat.svg`), clean cards, no emojis, no AI design tropes.
 
-### Pi Deployment Checklist
-- Run on port 80: `sudo PIRATE_PORT=80 python3 pirate_server/server.py`
-- Auto-start on boot via systemd service or `rc.local` for both `nrsc5` and `server.py`.
-- Generate/print badge: `python3 pirate_server/generate_qr.py` $\rightarrow$ `pirate_badge.html`.
+---
 
+## 12. Hotspot Architecture, Decisions & Pi Configuration
 
+### Agreed Architectural Decisions (Session 2026-09-12)
+
+1. **Hotspot Credentials & Single QR Code:**
+   - **SSID**: `PirateHat`
+   - **Password**: `treasure` (WPA2-PSK)
+   - **QR Code Content**: `WIFI:S:PirateHat;T:WPA;P:treasure;;`
+   - **Rationale**: Scanning this single QR code via native iOS/Android cameras auto-joins with **1 tap** (zero manual password typing). Using WPA2 prevents OS "Unsecured Network" security warnings and stops phones from aggressively dropping the offline AP.
+   - **Printed on Badge**: Single QR code with text:
+     - Wi-Fi: `PirateHat`
+     - Password: `treasure`
+     - Browser: `192.168.4.1` (`pirate.box`)
+     - Strictly no emojis (clean, authentic typography).
+
+2. **Primary Address: `http://192.168.4.1` (over `pirate.box`):**
+   - **Rationale**: Modern Android (Android 9+) has "Private DNS" (DNS-over-TLS to Google/Cloudflare over cellular) enabled by default. This causes custom domain names like `pirate.box` to fail on many devices. Direct IP `http://192.168.4.1` routes directly over the Wi-Fi interface and works 100% reliably regardless of private DNS or cellular data fallback. `pirate.box` remains active as a local DNS alias.
+
+3. **Captive Portal Protection (Preventing Track Loss in Apple CNA):**
+   - **Critical Problem Identified**: iOS Captive Network Assistant (CNA) is a sandboxed popup sheet that **completely disables file downloads / saving to the Files or Music app**. If a user clicks "Claim & Download" inside CNA, the server would stream and immediately `os.unlink()` the song, destroying the only copy on disk while the user's phone drops the download!
+   - **Solution**: The captive portal screen **only** displays the "Copy Link to Safari" card and holds back the song chest. Visitors must open real Safari (or Chrome) to access `/chest` and plunder songs.
+   - **Android Intent**: Android captive webviews include a direct `<a href="intent://192.168.4.1/chest#Intent;scheme=http;action=android.intent.action.VIEW;end">` button to immediately pop out into full Google Chrome.
+   - **JavaScript Copy Link**: Features `navigator.clipboard.writeText` with an `execCommand('copy')` fallback for sandboxed webviews, temporarily flashing "Copied!" for tactile user feedback.
+
+4. **Concurrency Policy:**
+   - Generous single-serving rule: If two visitors click "Claim" on the exact same track at the exact same split-second, both receive the stream before the file is deleted. No heavy concurrency locking needed.
+
+5. **Network Isolation & Offline Mode:**
+   - The hotspot is completely isolated (no internet bridging from `eth0`), ensuring identical behavior at home during development and on-site at Maker Faire.
+   - Hotspot profile (`PirateHotspot`) has `connection.autoconnect yes`.
+
+6. **Boot Resilience (No Ethernet on-site):**
+   - `pirate-server.service` runs on standard **Port 80** and orders `After=NetworkManager.service` (strictly omitting `network-online.target` / `NetworkManager-wait-online.service` to prevent 90-second boot stalls when operating portable on battery).
+
+### Pi System Setup Commands Executed / Required
+
+1. **Passwordless Sudo for User `benjamin`:**
+   ```bash
+   echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/010_benjamin-nopasswd
+   ```
+
+2. **NetworkManager Hotspot Setup (`wlan0`):**
+   ```bash
+   sudo nmcli connection add type wifi ifname wlan0 con-name PirateHotspot autoconnect yes ssid PirateHat mode ap 802-11-wireless.band bg 802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk treasure ipv4.method shared ipv4.addresses 192.168.4.1/24 ipv6.method ignore
+   ```
+
+3. **NetworkManager Captive DNS Configuration (`/etc/NetworkManager/dnsmasq-shared.d/pirate.conf`):**
+   ```
+   address=/#/192.168.4.1
+   address=/pirate.box/192.168.4.1
+   dhcp-option=option:domain-name,pirate.box
+   ```
+
+4. **Systemd Unit (`/etc/systemd/system/pirate-server.service`):**
+   ```ini
+   [Unit]
+   Description=Maker Faire Pirate Radio Web Server
+   After=NetworkManager.service
+   Wants=NetworkManager.service
+
+   [Service]
+   Type=simple
+   User=benjamin
+   WorkingDirectory=/home/benjamin/nrsc5
+   Environment=PIRATE_PORT=80
+   Environment=PIRATE_HOST=192.168.4.1
+   ExecStart=/usr/bin/python3 /home/benjamin/nrsc5/pirate_server/server.py
+   Restart=always
+   RestartSec=3
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+5. **Port 80 Capability for Python (Non-Root Execution):**
+   ```bash
+   sudo setcap 'cap_net_bind_service=+ep' $(readlink -f $(which python3))
+   ```
+
+6. **Hotspot Management Script (`pirate_server/hotspot.sh`):**
+   ```bash
+   # Check status and see connected client hostnames/IPs:
+   ./pirate_server/hotspot.sh status
+
+   # Switch back to home Wi-Fi (benhill6):
+   ./pirate_server/hotspot.sh stop
+
+   # Reactivate PirateHat hotspot on wlan0:
+   ./pirate_server/hotspot.sh start
+
+   # Tail live server plunder logs:
+   ./pirate_server/hotspot.sh logs
+   ```
+
+### Runtime Architecture & File Locations
+
+| File / Component | Location | Role / Configuration |
+| :--- | :--- | :--- |
+| **Hotspot Profile** | `/etc/NetworkManager/system-connections/PirateHotspot.nmconnection` | SSID: `PirateHat`, WPA2: `treasure`, IP: `192.168.4.1/24`, `autoconnect=true` |
+| **Captive DNS Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `address=/#/192.168.4.1`, `address=/pirate.box/192.168.4.1`, `dhcp-option=option:domain-name,pirate.box` |
+| **DHCP Leases** | `/var/lib/NetworkManager/dnsmasq-wlan0.leases` | DHCP range: `192.168.4.10` - `192.168.4.254` |
+| **Systemd Service** | `/etc/systemd/system/pirate-server.service` | Auto-starts `server.py` on Port 80, `After=NetworkManager.service` |
+| **Web Server** | `pirate_server/server.py` | Single-serving plunder server, captive probe redirects, CNA download protection |
+| **Landing & Handoff** | `pirate_server/templates/index.html` | Airline-style copy box (`http://192.168.4.1`), JS clipboard copy, Android Chrome intent |
+| **Treasure Chest** | `pirate_server/templates/chest.html` | Searchable song list, plunder modal, direct location download fallback, CNA notice |
+| **Single-QR Badge** | `pirate_server/pirate_badge.html` | Printable physical badge template (Single QR: `WIFI:S:PirateHat;T:WPA;P:treasure;;`) |
+| **Badge Generator** | `pirate_server/generate_qr.py` | Generates printable badge HTML using Google Charts API or local `qrencode` |
+| **Hotspot Helper** | `pirate_server/hotspot.sh` | Bash script for status, start, stop, and logs |
+
+### Verification & Testing Checklist
+1. **SSID Broadcast**: Phone detects `PirateHat` with WPA2 security.
+2. **Camera Auto-Join**: Scanning badge QR code connects with 1 tap (no typing).
+3. **Captive Popup**: Phone automatically opens captive prompt showing the Pirate Vessel welcome card and the **Copy Link** button.
+4. **Handoff to Safari/Chrome**:
+   - iOS: Tapping **Copy Link** copies `http://192.168.4.1`; opening Safari routes to the vault.
+   - Android: Tapping **OPEN IN CHROME** directly launches Google Chrome via Android Intent.
+5. **Plunder & Delete**: Claiming a song initiates direct download of `.m4a` file, unlinks track from disk, and presents farewell screen.
+6. **Track Protection**: If `/download` is attempted from within Apple CNA, server rejects the request with HTTP 403, preserving the file on disk.
+7. **Offline Boot**: Pi boots on battery without Ethernet and brings up `PirateHotspot` and `pirate-server` without delay.

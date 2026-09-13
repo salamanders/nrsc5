@@ -5,8 +5,10 @@ import sys
 import shutil
 import mimetypes
 
-PORT = int(os.environ.get("PIRATE_PORT", 8080))
+PORT = int(os.environ.get("PIRATE_PORT", 80))
+HOST = os.environ.get("PIRATE_HOST", "192.168.4.1")
 RECORDINGS_DIR = os.environ.get("RECORDINGS_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "recordings")))
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -40,10 +42,15 @@ def scan_songs():
     return songs
 
 class PirateHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "PirateShip/1.0"
+    server_version = "PirateShip/2.0"
 
     def has_plundered(self):
         return "plundered=1" in self.headers.get("Cookie", "")
+
+    def is_cna_client(self):
+        """Detects if client is an iOS Captive Network Assistant (sandboxed popup)."""
+        ua = self.headers.get("User-Agent", "")
+        return "CaptiveNetworkSupport" in ua
 
     def send_html(self, content, status=200):
         data = content.encode("utf-8")
@@ -57,7 +64,7 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         clean_path = os.path.normpath(rel_path).lstrip("/")
         full_path = os.path.join(STATIC_DIR, clean_path)
 
-        # Hacker protection: ensure requested file is inside STATIC_DIR
+        # Protection: ensure requested file is strictly inside STATIC_DIR
         if not full_path.startswith(STATIC_DIR) or not os.path.isfile(full_path):
             self.send_error(404, "Treasure not found!")
             return
@@ -100,51 +107,89 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
 
         # Handle simple variables
         content = content.replace("{{ songs|length }}", str(len(context.get("songs", []))))
+        content = content.replace("{{ host }}", HOST)
         return content
+
+    def handle_captive_probes(self, path):
+        """
+        Detects operating system captive portal probe requests and redirects them
+        cleanly to the landing page so the phone opens the captive prompt.
+        """
+        # Apple CNA probes
+        is_apple_probe = path in ("/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html")
+        # Android / Google probes
+        is_google_probe = path == "/generate_204" or path == "/gen_204" or path.endswith("/generate_204")
+        # Microsoft Windows probes
+        is_ms_probe = path in ("/connecttest.txt", "/ncsi.txt")
+        # Firefox probe
+        is_firefox_probe = path == "/success.txt"
+        # Amazon Kindle probe
+        is_kindle_probe = path == "/kindle-wifi/wifiredirect.html"
+
+        if is_apple_probe or is_google_probe or is_ms_probe or is_firefox_probe or is_kindle_probe:
+            self.send_response(302)
+            self.send_header("Location", f"http://{HOST}/")
+            self.end_headers()
+            return True
+
+        return False
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        # Static assets
+        # 1. Handle OS Captive Portal Probes
+        if self.handle_captive_probes(path):
+            return
+
+        # 2. Static assets
         if path.startswith("/static/"):
             self.serve_static(path[8:])
             return
 
-        # Farewell page
+        # 3. Farewell page
         if path == "/farewell":
             html_page = self.render_template("farewell.html")
             self.send_html(html_page)
             return
 
-        # If already claimed booty, force to farewell screen
+        # 4. If already claimed booty, force to farewell screen (unless visiting /foe)
         if self.has_plundered() and path not in ["/foe"]:
             self.send_response(302)
             self.send_header("Location", "/farewell")
             self.end_headers()
             return
 
-        # Landing page (Friend or Foe)
+        # 5. Captive DNS spoof check: if accessed through an external hostname, redirect to IP
+        host_header = self.headers.get("Host", "").split(":")[0].lower()
+        valid_hosts = (HOST.lower(), "localhost", "127.0.0.1", "pirate.box", "pirate.local")
+        if host_header and host_header not in valid_hosts and path in ("/", "/index.html"):
+            self.send_response(302)
+            self.send_header("Location", f"http://{HOST}/")
+            self.end_headers()
+            return
+
+        # 6. Landing page (Friend or Foe & Browser Handoff)
         if path == "/" or path == "/index.html":
             html_page = self.render_template("index.html")
             self.send_html(html_page)
             return
 
-        # Foe page
+        # 7. Foe page
         if path == "/foe":
             html_page = self.render_template("foe.html")
             self.send_html(html_page)
             return
 
-        # Treasure chest song list
+        # 8. Treasure chest song list
         if path == "/chest":
             songs = scan_songs()
             html_page = self.render_template("chest.html", {"songs": songs})
             self.send_html(html_page)
             return
 
-        # Download / Plunder endpoint
+        # 9. Download / Plunder endpoint
         if path == "/download":
             rel_path = query.get("file", [""])[0]
             if not rel_path:
@@ -158,11 +203,17 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(404, "That treasure has already been plundered by another pirate!")
                 return
 
+            # Protection against Apple CNA file deletion bug:
+            # If request is from an Apple captive popup, do NOT stream & delete!
+            if self.is_cna_client():
+                self.send_error(403, "Apple blocks saving songs in this preview window. Copy http://192.168.4.1 into Safari to plunder!")
+                return
+
             filename = os.path.basename(full_path)
             file_size = os.path.getsize(full_path)
 
             self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", "audio/mp4")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(file_size))
             self.send_header("Set-Cookie", "plundered=1; Path=/; Max-Age=600")
@@ -178,17 +229,19 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 print(f"[PIRATE] Download error for {filename}: {e}")
             return
 
-        # Not found
-        self.send_error(404, "Dead man tells no tales (Page not found).")
+        # Catch-all: redirect any unknown paths to root landing page
+        self.send_response(302)
+        self.send_header("Location", "/")
+        self.end_headers()
 
 def run_server():
     print("=" * 60)
     print("PIRATE VESSEL SINGLE-SERVING WEB SERVER")
+    print(f"Serving host: {HOST}")
     print(f"Serving port: {PORT}")
     print(f"Booty vault:  {RECORDINGS_DIR}")
     print("=" * 60)
 
-    # Allow multiple visitors to connect simultaneously without blocking
     with http.server.ThreadingHTTPServer(("", PORT), PirateHandler) as httpd:
         try:
             httpd.serve_forever()

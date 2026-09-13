@@ -15,6 +15,17 @@
       
       <h1>Ahoy, Traveler!</h1>
       <p>Ye've boarded the wireless waters of the Maker Faire Pirate Vessel.</p>
+
+      <div class="handoff-box">
+        <div class="handoff-title">Copy this link and open it in Safari:</div>
+        <div class="copy-row">
+          <input type="text" id="copyUrl" class="copy-input" value="http://192.168.4.1" readonly>
+          <button type="button" id="copyBtn" class="btn-copy" onclick="copyAddress()">Copy Link</button>
+        </div>
+        <div id="androidBox" style="display: none; margin-top: 12px;">
+          <a href="intent://192.168.4.1/chest#Intent;scheme=http;action=android.intent.action.VIEW;end" class="btn btn-gold">OPEN IN CHROME</a>
+        </div>
+      </div>
       
       <h2>ARE YE FRIEND OR BE YE FOE?</h2>
       <p>State yer business plainly, afore we decide yer fate!</p>
@@ -25,5 +36,43 @@
       </div>
     </div>
   </div>
+
+  <script>
+    if (/Android/.test(navigator.userAgent)) {
+      document.getElementById('androidBox').style.display = 'block';
+    }
+
+    function copyAddress() {
+      const url = document.getElementById('copyUrl').value;
+      const btn = document.getElementById('copyBtn');
+
+      function showSuccess() {
+        btn.innerText = "Copied!";
+        btn.classList.add("copied");
+        setTimeout(function() {
+          btn.innerText = "Copy Link";
+          btn.classList.remove("copied");
+        }, 2500);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(showSuccess, fallback);
+      } else {
+        fallback();
+      }
+
+      function fallback() {
+        const input = document.getElementById('copyUrl');
+        input.select();
+        input.setSelectionRange(0, 99999);
+        try {
+          document.execCommand('copy');
+          showSuccess();
+        } catch (e) {
+          btn.innerText = "Select & Copy";
+        }
+      }
+    }
+  </script>
 </body>
 </html>
