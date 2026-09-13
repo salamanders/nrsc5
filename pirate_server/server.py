@@ -115,18 +115,25 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         Detects operating system captive portal probe requests and redirects them
         cleanly to the landing page so the phone opens the captive prompt.
         """
-        # Apple CNA probes
-        is_apple_probe = path in ("/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html")
-        # Android / Google probes
-        is_google_probe = path == "/generate_204" or path == "/gen_204" or path.endswith("/generate_204")
-        # Microsoft Windows probes
-        is_ms_probe = path in ("/connecttest.txt", "/ncsi.txt")
-        # Firefox probe
-        is_firefox_probe = path == "/success.txt"
-        # Amazon Kindle probe
-        is_kindle_probe = path == "/kindle-wifi/wifiredirect.html"
+        # Apple CNA probes: Return Success token so iOS stays connected permanently without dropping
+        if path in ("/hotspot-detect.html", "/canonical.html", "/library/test/success.html", "/success.html"):
+            data = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+            return True
 
-        if is_apple_probe or is_google_probe or is_ms_probe or is_firefox_probe or is_kindle_probe:
+        # Android / Google probes: Serve portal.html so the screen pops up with [OPEN IN CHROME]
+        if path == "/generate_204" or path == "/gen_204" or path.endswith("/generate_204"):
+            html_page = self.render_template("portal.html")
+            self.send_html(html_page)
+            return True
+
+        # Windows / Firefox / Kindle probes:
+        if path in ("/connecttest.txt", "/ncsi.txt", "/success.txt", "/kindle-wifi/wifiredirect.html"):
             html_page = self.render_template("portal.html")
             self.send_html(html_page)
             return True

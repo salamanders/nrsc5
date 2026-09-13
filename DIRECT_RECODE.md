@@ -350,11 +350,14 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 2. **Primary Address: `http://192.168.4.1` (over `pirate.box`):**
    - **Rationale**: Modern Android (Android 9+) has "Private DNS" (DNS-over-TLS to Google/Cloudflare over cellular) enabled by default. This causes custom domain names like `pirate.box` to fail on many devices. Direct IP `http://192.168.4.1` routes directly over the Wi-Fi interface and works 100% reliably regardless of private DNS or cellular data fallback. `pirate.box` remains active as a local DNS alias.
 
-3. **Captive Portal Protection (Preventing Track Loss in Apple CNA):**
-   - **Critical Problem Identified**: iOS Captive Network Assistant (CNA) is a sandboxed popup sheet that **completely disables file downloads / saving to the Files or Music app**. If a user clicks "Claim & Download" inside CNA, the server would stream and immediately `os.unlink()` the song, destroying the only copy on disk while the user's phone drops the download!
-   - **Solution**: The captive portal screen **only** displays the "Copy Link to Safari" card and holds back the song chest. Visitors must open real Safari (or Chrome) to access `/chest` and plunder songs.
-   - **Android Intent**: Android captive webviews include a direct `<a href="intent://192.168.4.1/chest#Intent;scheme=http;action=android.intent.action.VIEW;end">` button to immediately pop out into full Google Chrome.
-   - **JavaScript Copy Link**: Features `navigator.clipboard.writeText` with an `execCommand('copy')` fallback for sandboxed webviews, temporarily flashing "Copied!" for tactile user feedback.
+3. **Asymmetric Captive Strategy (Apple Success Spoof vs. Android Auto-Popup):**
+   - **Empirical Findings from Live Testing (Session 2026-09-12)**:
+     - **Android Success**: Android's captive screen pops up automatically with the `[OPEN IN CHROME]` button. Chrome can even download directly from the captive webview (showing Chrome's standard "File can't be downloaded securely" prompt for plain HTTP; tapping "Keep" completes download). Android keeps the Wi-Fi connection intact.
+     - **iOS Auto-Disconnect Bug**: On iPhone, when Apple CNA pops up, leaving the window (swiping up or tapping cancel) causes Apple's Wi-Fi state machine to treat the captive network as abandoned. iOS immediately disconnects from `PirateHat` and reverts to the user's home Wi-Fi or cellular network, preventing Safari from ever reaching `192.168.4.1`.
+   - **Targeted Solution (Industry Standard: GoPro, DJI, IoT)**:
+     - **For Apple (`/hotspot-detect.html`)**: The server responds with Apple's official `Success` string: `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`. iOS marks the Wi-Fi as established, suppresses the broken CNA sheet, and **never drops the connection or reverts**. The iPhone user opens Safari, goes to `http://192.168.4.1/`, and downloads the track natively.
+     - **For Android (`/generate_204`)**: The server continues serving `portal.html` (HTTP 200). Android retains its zero-effort automatic screen pop-up with the `[OPEN IN CHROME]` button, bypassing the need for Android users to manually launch Chrome or type the IP.
+   - **CNA Deletion Protection**: If a download request is ever received from an Apple CNA User-Agent, `server.py` rejects it with HTTP 403, guaranteeing the server never unlinks a song while an iPhone drops the file.
 
 4. **Concurrency Policy:**
    - Generous single-serving rule: If two visitors click "Claim" on the exact same track at the exact same split-second, both receive the stream before the file is deleted. No heavy concurrency locking needed.
@@ -477,14 +480,14 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
                                         ▼
                      [Captive Portal Opens: portal.html]
                      (Exactly ONE thing to do: Get Out)
-                                        │
+                                         │
             ┌───────────────────────────┴───────────────────────────┐
             ▼                                                       ▼
       [Apple iOS / iPhone]                                  [Google Android]
             │                                                       │
-  • Shows ONLY "Copy Link" card                           • Shows ONLY "OPEN IN CHROME" button
-  • Tap "Copy Link" (copies 192.168.4.1)                  • Tap "OPEN IN CHROME" (launches Chrome)
-  • Open Safari & paste link                              • Chrome loads http://192.168.4.1/
+  • /hotspot-detect.html returns Success                 • /generate_204 returns portal.html
+  • iOS suppresses CNA & stays connected                 • Screen pops up automatically on phone
+  • Open Safari to http://192.168.4.1                    • Tap "OPEN IN CHROME" button
             │                                                       │
             └───────────────────────────┬───────────────────────────┘
                                         │
