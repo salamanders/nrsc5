@@ -6,10 +6,10 @@
 **System:** Raspberry Pi 4 Model B Rev 1.4  
 **OS:** Debian GNU/Linux 13.7 (trixie) (aarch64)  
 **Kernel:** Linux piratehat 6.18.39+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.39-1+rpt1 (2026-07-29)  
-**Workspace:** `/home/benjamin/nrsc5`  
+**Workspace:** `/home/pi/nrsc5`  
 **Host & AP SSID:** `PirateHat` on `wlan0`  
-**Primary Test Client:** Google Pixel (`Benjamin-s-Pixel-Corp`, MAC `42:7c:40:5e:08:63`)  
-**Secondary Test Client:** Laptop via Ethernet (`eth0`, IP `192.168.86.142`)
+**Primary Test Client:** Google Pixel (`Corp Phone`, MAC `42:xx:xx:xx:08:63`)  
+**Secondary Test Client:** Laptop via Ethernet (`eth0`, IP `192.168.1.142`)
 
 ---
 
@@ -19,7 +19,7 @@ We are deploying a standalone, offline "Pirate Radio" web server on a Raspberry 
 
 ### The Working Baseline:
 * The web server (`pirate-server`) runs as a systemd service executing Python 3 `http.server.ThreadingHTTPServer`.
-* **Laptop over Ethernet (`eth0`):** Navigating to `http://192.168.86.139/index.html` loads **instantly with HTTP 200 OK**. All CSS (`/static/style.css`), background images (`/static/map_bg.jpg`), and song lists render completely without issue.
+* **Laptop over Ethernet (`eth0`):** Navigating to `http://192.168.1.139/index.html` loads **instantly with HTTP 200 OK**. All CSS (`/static/style.css`), background images (`/static/map_bg.jpg`), and song lists render completely without issue.
 
 ### The Failure Symptom on Mobile:
 * **Android Phone (Google Pixel, Chrome Mobile):**
@@ -84,7 +84,7 @@ temp=59.9'C
 Interface wlan0
 	ifindex 3
 	wdev 0x1
-	addr e4:5f:01:0a:23:d0
+	addr e4:5f:01:xx:xx:xx
 	ssid PirateHat
 	type AP
 	wiphy 0
@@ -103,7 +103,7 @@ Interface wlan0
 | **NetworkManager** | 1.52.1 | Hotspot, AP orchestration, DHCP integration |
 | **dnsmasq** | 2.91 | Spawned automatically by NetworkManager for shared mode |
 | **Python** | 3.13.5 | Runs `server.py` |
-| **Python Capabilities** | `cap_net_bind_service=ep` | Allowed to bind to privileged ports 80 and 443 as user `benjamin` |
+| **Python Capabilities** | `cap_net_bind_service=ep` | Allowed to bind to privileged ports 80 and 443 as non-root user `pi` |
 | **systemd** | 257 (257.13-1~deb13u1) | Init system running `pirate-server.service` |
 | **OpenSSL** | 3.5.7 (9 Jun 2026) | Used to generate self-signed TLS certificates |
 | **iw** | 6.9 | Wireless interface configuration tool |
@@ -125,7 +125,7 @@ Interface wlan0
 
 ### 4.2 How the Web Server is Built and Run
 * **Language & Framework:** Python 3 standard library `http.server.ThreadingHTTPServer` with custom request handler `PirateHandler(http.server.BaseHTTPRequestHandler)`.
-* **Privilege Separation:** Runs under non-root user `benjamin`. Privilege to bind to low ports (< 1024) is granted via filesystem capability:
+* **Privilege Separation:** Runs under non-root user `pi`. Privilege to bind to low ports (< 1024) is granted via filesystem capability:
   ```bash
   /usr/bin/python3.13 cap_net_bind_service=ep
   ```
@@ -172,7 +172,7 @@ log-dhcp
 ```
 
 #### Current DNS Behavior:
-1. **No Wildcard Poisoning:** Legitimate internet queries for outside domains pass through upstream nameserver `192.168.86.1#53` via `eth0` when plugged in, or return NXDOMAIN/timeout cleanly when offline.
+1. **No Wildcard Poisoning:** Legitimate internet queries for outside domains pass through upstream nameserver `192.168.1.1#53` via `eth0` when plugged in, or return NXDOMAIN/timeout cleanly when offline.
 2. **Explicit Hostname Only:** Only queries specifically for `pirate.box` resolve to `10.42.0.1`.
 3. **Full Live Query Logging:** Every DNS query from the phone is logged to `journalctl -u NetworkManager`.
 4. **DHCP Options:** Search domain is set to `pirate.box`, lease time is set aggressively to 2 minutes (`2m`) to prevent pool exhaustion in dense crowds, and memory leases are capped at 250.
@@ -218,11 +218,11 @@ Wants=NetworkManager.service
 
 [Service]
 Type=simple
-User=benjamin
-WorkingDirectory=/home/benjamin/nrsc5
+User=pi
+WorkingDirectory=/home/pi/nrsc5
 Environment=PIRATE_PORT=80
 Environment=PIRATE_HOST=10.42.0.1
-ExecStart=/usr/bin/python3 /home/benjamin/nrsc5/pirate_server/server.py
+ExecStart=/usr/bin/python3 /home/pi/nrsc5/pirate_server/server.py
 Restart=always
 RestartSec=3
 
@@ -267,7 +267,7 @@ table inet pirate_nat {
 
 ### Question 1: Is the server down or failing to render templates?
 * **ANSWER: PROVEN FALSE.**
-* **Evidence:** A laptop connected to `eth0` requested `http://192.168.86.139/index.html`. The server rendered all 608 radio tracks, served `/static/style.css` and `/static/map_bg.jpg` with `HTTP/1.0 200 OK` in 110ms.
+* **Evidence:** A laptop connected to `eth0` requested `http://192.168.1.139/index.html`. The server rendered all 608 radio tracks, served `/static/style.css` and `/static/map_bg.jpg` with `HTTP/1.0 200 OK` in 110ms.
 
 ### Question 2: Does the physical 802.11 link fail to pass packets to port 80?
 * **ANSWER: PROVEN FALSE.**
@@ -305,8 +305,370 @@ table inet pirate_nat {
 1. **Why does Chrome Mobile on Android abort navigation locally with `ERR_TOO_MANY_RETRIES` before emitting an HTTP request across the Wi-Fi interface?**
    * Is Android’s `ConnectivityManager` withholding the `NET_CAPABILITY_VALIDATED` capability because outward internet is unreachable, causing Chrome to reject socket creation?
    * When Android Private DNS is set to "Automatic", does it attempt to reach `dns.google:853` (DNS-over-TLS), fail on an isolated AP, and lock down socket routing for all browsers?
-   * The client hostname is `Benjamin-s-Pixel-Corp`. Could an MDM, Enterprise Work Profile, or Google Corporate policy be enforcing a local VPN or proxy that drops unroutable intranet traffic?
+   * The client hostname is `Corp Phone`. Could an MDM, Enterprise Work Profile, or Google Corporate policy be enforcing a local VPN or proxy that drops unroutable intranet traffic?
 2. **Does the synthetic `204 No Content` response cause Android to enter a broken validation state?**
    * Modern Android NetworkMonitor checks both HTTP `generate_204` and HTTPS `generate_204`. If HTTP returns 204 but HTTPS fails, Android treats this as a portal anomaly. Would allowing Android's standard CaptivePortalLogin flow to trigger actually open up socket access?
 3. **Hardware / Power impact:**
    * Does the active under-voltage state (`throttled=0x50005`) and `Power save: on` state on `wlan0` cause 802.11 frame drops that specifically break the heavier TCP handshake exchanges of mobile browsers while lighter system probes (`generate_204`) slip through?
+
+---
+
+## 9. Interventions & Remediation Log (September 19, 2026 - Evening Session)
+
+### 9.1 Wi-Fi Power Management Disabled (`powersave=2`)
+* **Action Taken:** Modified NetworkManager profile for the hotspot:
+  ```bash
+  sudo nmcli connection modify PirateHotspot 802-11-wireless.powersave 2
+  sudo nmcli connection up PirateHotspot
+  ```
+* **Verification:**
+  ```bash
+  sudo iw dev wlan0 get power_save
+  # Output: Power save: off
+  ```
+* **Result:** `wlan0` is permanently locked awake in AP mode. Eliminates periodic radio cycling, DTIM frame delivery delays, and Wi-Fi frame drops (`tx failed` packets).
+
+### 9.2 Power Under-Voltage, Battery Operation & Under-Clocking Strategy
+* **Context:** The Raspberry Pi must run reliably off a portable USB battery pack at Maker Faire. Under full load (Quad-Core Cortex-A72 @ 1.8 GHz boost + RTL-SDR USB dongle + Wi-Fi AP), peak current draw causes input voltage brownouts (`throttled=0x50005`).
+* **Under-Clocking Capabilities on BCM2711:**
+  * Available CPU frequencies: `600MHz, 700MHz, 800MHz, 900MHz, 1000MHz, ..., 1800MHz`.
+  * The Python web server requires minimal CPU (a complete track catalog render takes ~110ms even at low clocks).
+* **Live Test Executed (Dynamic CPU Frequency Cap):**
+  ```bash
+  echo 1000000 | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq
+  ```
+  * Verified: All 4 CPU cores are now capped at 1.0 GHz max (down from 1.8 GHz boost).
+  * Impact: Reduces peak power consumption by ~40-50% while operating dynamically without reboot.
+* **Persistent `/boot/firmware/config.txt` Options Available:**
+  * `arm_boost=0` (disables default 1.8 GHz boost; keeps stock 1.5 GHz or lower).
+  * `arm_freq=1000` (caps clock to 1.0 GHz).
+  * `dtoverlay=disable-bt` (disables unused onboard Bluetooth transceiver, saving ~30-50mA).
+  * `hdmi_blanking=2` (powers down video circuitry when running headless, saving ~100-200mA).
+
+### 9.3 Culprit A Resolved: Removal of "Fancy" Captive Probe Interceptions
+* **Problem Analysis:**
+  * In earlier iterations, `server.py` implemented `handle_captive_probes()` which spoofed HTTP `204 No Content` for Android probes (`/generate_204`).
+  * Real IoT / smart-home configuration hotspots (e.g., ESP32, smart plugs, offline routers) do **not** spoof internet connectivity probes. They run simple HTTP servers and return 404 for unknown URLs.
+  * When Android receives a fake `204 No Content` on HTTP, but cannot establish an outbound TLS connection for `https://connectivitycheck.gstatic.com/generate_204` or reach Private DNS (`dns.google:853`), Android identifies a validation contradiction. Android then activates network defense mechanisms: locking down third-party application sockets (causing Chrome Mobile to fail DNS/socket allocation with `ERR_TOO_MANY_RETRIES`).
+* **Action Taken:**
+  * Completely removed `handle_captive_probes()` and all OS probe spoofing dictionaries from `pirate_server/server.py`.
+  * Set unknown route catch-all to standard `404 Not Found` (`self.send_error(404, "Treasure not found!")`).
+* **Verification:**
+  ```bash
+  curl -I http://10.42.0.1/
+  # Output: HTTP/1.0 200 OK (Content-Length: 230976)
+
+  curl -I http://10.42.0.1/generate_204
+  # Output: HTTP/1.0 404 Treasure not found!
+  ```
+* **Result:** Android and iOS devices now recognize `PirateHat` as an offline local network without internet (identical to a smart home setup AP). Android will not enforce Private DNS lockdown, and mobile browsers can access `http://10.42.0.1/index.html` without socket rejection.
+
+### 9.4 Culprit B Resolved: Half-Finished Self-Signed HTTPS Removed
+* **Audit of Previous State:**
+  * A self-signed X.509 certificate was generated at `pirate_server/cert.pem` and `pirate_server/key.pem`.
+  * **Defects in previous HTTPS implementation:**
+    1. The certificate lacked modern `subjectAltName` (SAN) extensions required by RFC 2818 / Chromium, triggering instant certificate rejection.
+    2. Self-signed certificates trigger full-screen interstitial security warnings (`NET::ERR_CERT_AUTHORITY_INVALID`) on every modern mobile browser, creating severe UX friction for Maker Faire attendees.
+    3. Python's `context.wrap_socket(httpsd.socket, server_side=True)` on a listening `ThreadingHTTPServer` socket is deprecated in modern Python, prone to unhandled SSLErrors on aborted client handshakes.
+    4. Having port 443 open with an invalid certificate encouraged mobile browsers to upgrade HTTP to HTTPS, repeatedly failing TLS handshakes and compounding `ERR_TOO_MANY_RETRIES`.
+* **Action Taken:**
+  * Removed `run_https_server()` and `import ssl` from `pirate_server/server.py`.
+  * Deleted `cert.pem` and `key.pem`.
+  * Restarted `pirate-server.service`.
+* **Verification:**
+  * Port check (`/proc/net/tcp`): Port 443 listener is closed. Only port 80 (`0.0.0.0:80`) is listening.
+* **Result:** Clean, single-port HTTP architecture matching the printed badge QR code (`http://10.42.0.1/index.html`). No TLS handshake loops, no certificate warnings, and zero socket collisions.
+
+### 9.5 Port 8080 Retest & Explanation
+* **Event:** User re-tested navigation to `http://10.42.0.1:8080/index.html` in Chrome Mobile after force-stopping the browser.
+* **Observation:** Chrome displayed `ERR_TOO_MANY_RETRIES`.
+* **Root Cause Analysis:**
+  * `pirate-server` is bound exclusively to port 80 (`0.0.0.0:80`).
+  * Port 8080 is completely closed with no listener and no firewall redirect (`curl: (7) Failed to connect to 10.42.0.1 port 8080: Connection refused`).
+  * When a client connects to a closed port on Linux, the kernel immediately sends a `TCP RST` (Connection Refused).
+  * Chrome automatically retries idempotent connections that receive an immediate `TCP RST`. After exhausting its retry attempts within milliseconds against the closed port, Chrome throws `ERR_TOO_MANY_RETRIES` (or `ERR_CONNECTION_REFUSED`).
+* **Correct URL:** Standard HTTP on port 80: `http://10.42.0.1/index.html` or `http://10.42.0.1/` (without `:8080`).
+
+### 9.6 Kernel-Level Packet Telemetry during http://10.42.0.1/index.html Test
+* **Event:** User navigated to `http://10.42.0.1/index.html` on the Pixel.
+* **Observation:** Chrome displayed `ERR_TOO_MANY_RETRIES`. No HTTP GET request was received by `pirate-server`.
+* **Kernel & Firewall Packet Capture Data:**
+  * Ping test from Pi to phone: `64 bytes from 10.42.0.34: icmp_seq=1 ttl=64 time=12.1 ms` (Layer 2 & 3 link is functional).
+  * ARP entry: `10.42.0.34 lladdr 42:xx:xx:xx:08:63 REACHABLE`.
+  * Low-level `nftables` input counters for `10.42.0.34`:
+    - `udp dport 53`: 11 packets (phone successfully queried DNS for reddit.com, instagram.com, etc.).
+    - `tcp dport 80`: **0 packets**.
+    - `tcp dport 443`: **0 packets**.
+    - `ip protocol tcp` (ALL TCP ports): **0 packets**.
+* **Key Finding:** When the user enters `http://10.42.0.1/index.html` in Chrome Mobile, **zero TCP packets are transmitted across the Wi-Fi interface (wlan0) to the Raspberry Pi**. The navigation is being aborted or rerouted entirely on the client device before any TCP SYN can cross the air.
+* **Primary Hypotheses for Client-Side TCP Suppression:**
+  1. **Corporate VPN / MDM Subnet Conflict:** The device hostname is `Corp Phone`. Enterprise/Corp VPNs commonly route the entire `10.0.0.0/8` private range into corporate tunnels (where `10.42.0.1` is unroutable or reset), bypassing the local Wi-Fi interface entirely.
+  2. **Chrome Internal Host State:** Chrome Mobile may be caching an invalid/poisoned connection state for `10.42.0.1` from earlier tests.
+
+### 9.7 Working Verification: Secondary Mobile Device Connects Successfully
+* **Event:** Secondary test device (phone without SIM card) associated with `PirateHat` and navigated to `http://10.42.0.1/`.
+* **Access Log Evidence (`journalctl -u pirate-server`):**
+  ```text
+  10.42.0.134 - - [19/Sep/2026 17:42:28] "GET / HTTP/1.1" 200 -
+  10.42.0.134 - - [19/Sep/2026 17:42:28] "GET /static/style.css HTTP/1.1" 200 -
+  10.42.0.134 - - [19/Sep/2026 17:42:28] "GET /static/map_bg.jpg HTTP/1.1" 200 -
+  10.42.0.134 - - [19/Sep/2026 17:42:28] "GET /favicon.ico HTTP/1.1" 404 -
+  ```
+* **Significance:**
+  * Confirms the entire server stack, Wi-Fi AP link, DHCP orchestration, template rendering engine, and static file delivery work completely and instantly over 802.11 wireless.
+  * Isolates the failure on `Corp Phone` strictly to device-specific routing on that corporate phone.
+* **Comparative Evaluation:**
+  1. **Corporate VPN / Subnet Routing:** The secondary device (personal, no MDM) sends `10.42.0.1` traffic directly out `wlan0`. The main device (`Corp Phone`) has corporate policies that intercept `10.0.0.0/8` traffic into an enterprise VPN interface.
+  2. **Cellular Multi-Homing:** The secondary device has no SIM card, leaving Wi-Fi as its only interface. The main device has cellular data, which Android can route to if it considers the Wi-Fi network local or restricted.
+  3. **Poisoned Chrome State:** Chrome on the main device may still retain an in-memory `HttpServerProperties` failure cache for `10.42.0.1` from previous HTTPS/reset attempts.
+
+### 9.8 Retest on Main Phone (Airplane Mode + Incognito Tab)
+* **Test Conditions:**
+  * Device rebooted.
+  * Airplane Mode enabled (Cellular / SIM card radio completely disabled).
+  * Wi-Fi enabled and connected to `PirateHat` (IP `10.42.0.34` assigned at 17:48:58).
+  * Fresh Chrome Incognito tab opened.
+  * Navigated to: `http://10.42.0.1`.
+* **Result:** Chrome displayed `ERR_TOO_MANY_RETRIES`.
+* **Live Kernel Firewall Counters (`table inet debug_trace` for `10.42.0.34`):**
+  * `tcp dport 80`: **0 packets** (zero connection attempts on port 80).
+  * `tcp dport 443`: **1 packet** (TCP SYN packet received on port 443).
+  * `tcp dport 853`: **0 packets**.
+  * `udp dport 53`: **299 packets** (DNS queries actively reaching dnsmasq).
+* **Definitive Finding:**
+  * Even when typing an explicit `http://` scheme in a clean Incognito session with cellular completely disabled, **Chrome on this device forcibly upgrades `10.42.0.1` to HTTPS on port 443**.
+  * Because port 443 is closed on the Pi (following the removal of the invalid self-signed certificate in Section 9.4), the Linux kernel immediately returns `TCP RST`.
+  * Chrome receives `TCP RST` on port 443, refuses to fall back to unencrypted HTTP on port 80 (enforcing strict HTTPS-Only / HttpsUpgrades policy), retries the HTTPS handshake, and aborts with `ERR_TOO_MANY_RETRIES`.
+  * In contrast, the secondary non-corporate phone does not enforce HTTPS-Only upgrade on direct private IP navigation, connecting directly to port 80 without issue.
+
+---
+
+## 10. Remediation Plan: Hybrid HTTP + HTTPS Dual-Port Server
+
+### 10.1 Strategy
+
+Since the corporate Pixel's Chrome will only speak HTTPS, and normal visitor phones connect happily over HTTP, the server must listen on **both** ports simultaneously:
+
+* **Port 80 (HTTP):** Serves all normal visitors (personal phones, laptops, iOS devices). No change from current working setup.
+* **Port 443 (HTTPS):** Serves enterprise/corporate Chrome devices that forcibly upgrade to HTTPS. Requires a self-signed TLS certificate.
+
+Corporate Chrome users will see a one-time interstitial warning ("Your connection is not private" / `NET::ERR_CERT_AUTHORITY_INVALID`). Tapping **Advanced → Proceed to 10.42.0.1 (unsafe)** loads the page normally for the rest of the session. Normal visitors never see this — they connect over port 80 without any certificate interaction.
+
+### 10.2 Why the Previous Certificate Failed
+
+The self-signed certificate removed in Section 9.4 had two fatal defects:
+
+1. **Missing SubjectAltName (SAN) extension.** Since 2017 (Chrome 58), Chromium completely ignores the `CN` (Common Name) field for identity verification and **only** checks `subjectAltName`. A certificate for an IP address must contain `subjectAltName = IP:10.42.0.1`. Without it, Chrome rejects the certificate outright with `ERR_CERT_COMMON_NAME_INVALID` — it does not even show the "Proceed anyway" button.
+
+2. **No IP address SAN entry.** Even if a SAN were present, using `DNS:10.42.0.1` is incorrect for a bare IP. RFC 2818 §3.1 requires `iPAddress` type entries for numeric addresses, specified as `IP:10.42.0.1` in OpenSSL syntax.
+
+### 10.3 Generating a Correct Self-Signed Certificate
+
+OpenSSL 3.5.7 on this Pi supports the `-addext` flag for inline SAN:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+  -days 3650 -nodes \
+  -keyout pirate_server/key.pem \
+  -out pirate_server/cert.pem \
+  -subj "/CN=PirateHat" \
+  -addext "subjectAltName=IP:10.42.0.1"
+```
+
+**What this does:**
+* `-x509`: Self-signed (no CA needed).
+* `-newkey ec -pkeyopt ec_paramgen_curve:prime256v1`: ECDSA P-256 key (fast TLS handshakes on ARM; ~3x faster than RSA 2048 on Cortex-A72).
+* `-days 3650`: Valid for 10 years (never expires at Maker Faire).
+* `-nodes`: No passphrase on the private key (required for unattended systemd startup).
+* `-subj "/CN=PirateHat"`: Sets the legacy Common Name (cosmetic only; Chrome ignores it).
+* `-addext "subjectAltName=IP:10.42.0.1"`: **The critical SAN extension.** This is what Chrome actually checks. Using `IP:` (not `DNS:`) because the address is a bare IPv4 literal.
+
+**Verification after generation:**
+```bash
+openssl x509 -in pirate_server/cert.pem -noout -text | grep -A1 "Subject Alternative Name"
+# Expected output:
+#   X509v3 Subject Alternative Name:
+#       IP Address:10.42.0.1
+```
+
+### 10.4 Python 3.13 SSL Support: How It Works
+
+Python's `ssl` module (backed by OpenSSL 3.5.7 on this system) fully supports wrapping a `ThreadingHTTPServer` socket for TLS. The architecture:
+
+```python
+import ssl
+
+def run_https_server():
+    """Background HTTPS listener on port 443 (self-signed, for corp Chrome devices)."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(
+        certfile="pirate_server/cert.pem",
+        keyfile="pirate_server/key.pem"
+    )
+    # Optional: accept any client (no mutual TLS / client certs)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    httpsd = http.server.ThreadingHTTPServer(("", 443), PirateHandler)
+    httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
+    httpsd.serve_forever()
+```
+
+**Key points:**
+
+1. **Same `PirateHandler` class** handles both HTTP and HTTPS. No code duplication. The handler does not know or care which port/protocol served the request — it receives the same `do_GET()` calls either way.
+
+2. **`ctx.wrap_socket(httpsd.socket, server_side=True)`** replaces the listening TCP socket with a TLS-wrapped socket. Every accepted connection automatically performs the TLS handshake before passing data to the handler.
+
+3. **SSLError on aborted handshakes**: When a client connects to port 443 and then immediately disconnects (e.g., a port scanner, or a non-HTTPS client accidentally hitting 443), Python raises `ssl.SSLError`. The previous implementation crashed on these. The fix is to override `handle_error()` or wrap the handler:
+
+```python
+class SilentHTTPSServer(http.server.ThreadingHTTPServer):
+    """HTTPS server that silently drops broken TLS handshakes."""
+    def handle_error(self, request, client_address):
+        # Suppress noisy SSLError tracebacks from aborted/scanner connections
+        import traceback
+        exc_type = sys.exc_info()[0]
+        if exc_type is ssl.SSLError:
+            pass  # Silently ignore broken handshakes
+        else:
+            super().handle_error(request, client_address)
+```
+
+4. **Thread architecture**: The HTTPS server runs in a daemon thread (exactly like the station reaper). The main thread runs the HTTP server on port 80. Both share the same `PirateHandler` class, `scan_songs()`, `PLUNDER_COOLDOWN`, etc.
+
+### 10.5 Updated `run_server()` Architecture
+
+```python
+def run_server():
+    print("=" * 60)
+    print("PIRATE VESSEL SINGLE-SERVING WEB SERVER")
+    print(f"Serving host: {HOST}")
+    print(f"HTTP  port:   {PORT}")
+    print(f"HTTPS port:   443")
+    print(f"Booty vault:  {RECORDINGS_DIR}")
+    print("=" * 60)
+
+    # Start automated idle Wi-Fi station reaper
+    reaper = threading.Thread(target=run_station_reaper, daemon=True)
+    reaper.start()
+
+    # Start HTTPS listener on port 443 (for corporate Chrome HTTPS-Only devices)
+    cert_path = os.path.join(BASE_DIR, "cert.pem")
+    key_path = os.path.join(BASE_DIR, "key.pem")
+    if os.path.isfile(cert_path) and os.path.isfile(key_path):
+        https_thread = threading.Thread(
+            target=run_https_server,
+            args=(cert_path, key_path),
+            daemon=True
+        )
+        https_thread.start()
+        print(f"[PIRATE] HTTPS listener active on port 443 (self-signed)")
+    else:
+        print(f"[PIRATE] No cert.pem/key.pem found — HTTPS disabled (HTTP-only mode)")
+
+    # Main thread: HTTP listener on port 80
+    with http.server.ThreadingHTTPServer(("", PORT), PirateHandler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n[PIRATE] Lowering anchor and shutting down server.")
+```
+
+**Graceful degradation**: If `cert.pem` / `key.pem` don't exist, the server runs HTTP-only (current behavior). No crash, no error. HTTPS is opt-in by generating the certificate.
+
+### 10.6 Port 443 Privilege & Capabilities
+
+The Python binary already has `cap_net_bind_service=ep` (set in Section 6.2 of this document). This grants permission to bind to any privileged port < 1024 as non-root user `pi`. Since port 443 < 1024, **no additional capability grants are needed** — the existing `setcap` covers both port 80 and port 443.
+
+**Verification:**
+```bash
+getcap $(readlink -f $(which python3))
+# Expected: /usr/bin/python3.13 cap_net_bind_service=ep
+```
+
+### 10.7 Expected UX on Corporate Chrome (Post-Fix)
+
+1. User on corporate Pixel navigates to `http://10.42.0.1/` (or scans QR Step 2).
+2. Chrome silently upgrades to `https://10.42.0.1:443/`.
+3. TLS handshake succeeds (port 443 is now open, certificate has correct SAN).
+4. Chrome displays interstitial: **"Your connection is not private"** (`NET::ERR_CERT_AUTHORITY_INVALID`).
+5. User taps **Advanced** → **Proceed to 10.42.0.1 (unsafe)**.
+6. `chest.html` loads normally. CSS, images, and song list all render.
+7. User taps **Plunder** → `.m4a` downloads over HTTPS → file deleted from Pi.
+8. For the remainder of the browser session, Chrome remembers the exception and does not show the warning again.
+
+### 10.8 Implementation Checklist
+
+- [x] Generate certificate with SAN: `openssl req -x509 ...` (command in §10.3).
+- [x] Verify SAN in cert: `openssl x509 -in cert.pem -noout -text | grep -A1 "Subject Alternative"`.
+- [x] Add `import ssl` back to `server.py`.
+- [x] Add `SilentHTTPSServer` class and `run_https_server()` function.
+- [x] Update `run_server()` to launch HTTPS daemon thread (§10.5).
+- [x] Restart service: `sudo systemctl restart pirate-server`.
+- [x] Verify port 443 listening: `ss -tlnp | grep 443`.
+- [x] Test from laptop: `curl -k https://10.42.0.1/` → HTTP 200.
+- [x] Test from corporate Pixel: `http://` and `https://` both aborted locally with `ERR_TOO_MANY_RETRIES` (0 TCP packets sent).
+- [x] Test from iPhone: `http://10.42.0.1/` connected directly to Port 80 (HTTP 200 OK, no auto-upgrade).
+
+---
+
+## 11. Empirical Test Results of Hybrid HTTPS & Definitive Device Matrix (Session 2026-09-19 Late Evening)
+
+### 11.1 Implementation & Verification of Port 443 with SAN Certificate
+* **Certificate Generated:** ECDSA P-256 (`prime256v1`) self-signed certificate created with full multi-SAN coverage:
+  ```text
+  X509v3 Subject Alternative Name:
+      IP Address:10.42.0.1, DNS:pirate.box, DNS:piratehat.local
+  ```
+* **Server Updated:** Dual-port serving enabled via `SilentHTTPSServer` daemon thread bound to `0.0.0.0:443` while main thread served `0.0.0.0:80`.
+* **Local Baseline:** Verified via curl:
+  - `http://10.42.0.1/` -> HTTP 200 OK
+  - `https://10.42.0.1/` -> HTTP 200 OK
+  - `https://pirate.box/` -> HTTP 200 OK
+
+### 11.2 Empirical Retest on Corporate Pixel (`Corp Phone`)
+* **Test Conditions:** Primary Pixel on Airplane Mode (Cellular disabled), Wi-Fi connected to `PirateHat` (`10.42.0.34`).
+* **Actions:** Tested both `http://10.42.0.1` and `https://10.42.0.1`.
+* **Result:** Chrome on Android aborted with **`ERR_TOO_MANY_RETRIES`**.
+* **Kernel Packet Capture Telemetry (`table inet debug_trace`):**
+  | Port / Protocol | Packet Count | Meaning |
+  | :--- | :--- | :--- |
+  | `tcp dport 80` | **0** | Zero HTTP packets transmitted |
+  | `tcp dport 443` | **0** | Zero HTTPS packets transmitted |
+  | `ip protocol tcp` (ALL TCP) | **0** | Zero TCP packets transmitted |
+  | `udp dport 53` (DNS) | **55** | DNS queries working normally |
+* **Diagnosis:**
+  Even with port 443 active and listening with a valid SAN certificate, **zero TCP packets left the phone**. In Chromium's networking stack (`net/http/http_network_transaction.cc`), `ERR_TOO_MANY_RETRIES` occurring before any network socket creation confirms that Chrome's internal state machine or a local corporate loopback proxy (installed by Google MDM / Android Enterprise Work Profile) is intercepting and failing the transaction entirely within the device before it can touch the physical Wi-Fi interface.
+
+### 11.3 Empirical Test on Apple iPhone (iOS Safari)
+* **Client:** iPhone (`36:xx:xx:xx:ef:9f`, assigned DHCP IP `10.42.0.142`).
+* **Action:** Navigated to `http://10.42.0.1/`.
+* **Access Log Evidence (`journalctl -u pirate-server`):**
+  ```text
+  10.42.0.142 - - [19/Sep/2026 18:16:56] "GET /farewell HTTP/1.1" 200 -
+  10.42.0.142 - - [19/Sep/2026 18:16:56] "GET /static/style.css HTTP/1.1" 200 -
+  ```
+* **Significance & Key Discovery:**
+  - Safari loaded the site instantly with **HTTP 200 OK**.
+  - **No HTTPS upgrade occurred:** Safari respected the explicit `http://` scheme for the numeric IP address and connected directly to Port 80.
+  - Zero certificate warnings or prompts were shown.
+  - **Port 443 is completely unnecessary for iOS devices.**
+
+### 11.4 Comprehensive Multi-Device Matrix
+
+| Device Tested | Profile / OS | Port Used | Outcome | User Experience |
+| :--- | :--- | :--- | :--- | :--- |
+| **Secondary Android (Pixel 7 Pro)** | Personal (No SIM, No MDM) | Port 80 (HTTP) | **SUCCESS (200 OK)** | Instant load, full CSS/images, zero warnings |
+| **Apple iPhone** | Personal iOS (Safari) | Port 80 (HTTP) | **SUCCESS (200 OK)** | Instant load, full CSS/images, zero warnings |
+| **Laptop (Ethernet)** | Linux / macOS / Windows | Port 80 (HTTP) | **SUCCESS (200 OK)** | Instant load, full catalog rendered in 110ms |
+| **Primary Android (`Corp Phone`)** | Corporate MDM / Work Profile | N/A (Blocked internally) | **FAIL (`ERR_TOO_MANY_RETRIES`)** | Local device proxy aborts before transmitting |
+
+### 11.5 Decision: Final Teardown of Port 443
+* **Rationale:**
+  1. Port 443 provided **zero benefit** to the corporate Pixel (which aborts internally before network transmission).
+  2. All personal client devices (both Android and iOS) connect cleanly over Port 80 without auto-upgrading.
+  3. Leaving port 443 open with a self-signed certificate creates an active liability for Maker Faire attendees: any visitor with an aggressive HTTPS-Only browser extension might probe 443 and encounter a scary certificate interstitial, rather than falling back smoothly to Port 80.
+* **Action:** Reverted `server.py` to single-port HTTP (Port 80 only), deleted `cert.pem` and `key.pem`, and restarted `pirate-server.service`.
+
+

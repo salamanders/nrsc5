@@ -262,7 +262,7 @@ During initial testing against real over-the-air capture data (`support/sample.x
    - Decodes with **zero errors** using both stock `ffmpeg` and standalone `faad`.
 3. **`kbay_30min.hdc` (30-Minute Continuous OTA Capture, 98.5 HD2 Classic Rock)**:
    - **38,686 / 38,686 frames successfully converted (100.0%)**, 0 corrupt, 0 skipped, 38,686 SBR dropped.
-   - Output file [`support/kbay_30min.aac`](file:///home/benjamin/Documents/nrsc5/support/kbay_30min.aac) (6.0 MB, 30:48 duration, 22,050 Hz AAC-LC).
+   - Output file [`support/kbay_30min.aac`](support/kbay_30min.aac) (6.0 MB, 30:48 duration, 22,050 Hz AAC-LC).
    - Verified end-to-end decode with stock `ffmpeg -v error -f null -`: **zero decode errors or warnings across all 38,686 packets**.
 4. **`synthtest.py`**:
    - **200 / 200 synthetic frames pass bit-exact verification**.
@@ -323,7 +323,7 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 - **Physical Context**: Embedded inside a Maker Faire Audio Hat running on a Raspberry Pi with an RTL-SDR dongle disguised as a feather.
 - **Access Flow**: Clean 2-step badge process:
   1. Scan **Step 1 QR** (or type SSID `PirateHat`, password `treasure`) to associate with Wi-Fi.
-  2. Scan **Step 2 QR** (or browse to `http://192.168.4.1/`) to open the Treasure Chest in Safari/Chrome and plunder a track.
+  2. Scan **Step 2 QR** (or browse to `http://10.42.0.1/`) to open the Treasure Chest in Safari/Chrome and plunder a track.
 - **Pages**:
   - `/` and `/chest` (Song list with live search, confirmation modal).
   - `/download?file=...` (Streams `.m4a` to browser, deletes file from disk immediately via `os.unlink()`, sets 10-min cookie `plundered=1`).
@@ -344,9 +344,9 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
    - **Rationale**: Scanning this QR code via native iOS/Android cameras auto-joins with **1 tap** (zero manual password typing). Using WPA2 prevents OS "Unsecured Network" security warnings and stops phones from aggressively dropping the offline AP.
    - **Printed on Badge**: Step 1 QR code with SSID (`PirateHat`) and Password (`treasure`) printed clearly right beneath the code.
 
-2. **Primary Address: `http://192.168.4.1` (over `pirate.box`):**
-   - **Rationale**: Modern Android (Android 9+) has "Private DNS" (DNS-over-TLS to Google/Cloudflare over cellular) enabled by default. This causes custom domain names like `pirate.box` to fail on many devices. Direct IP `http://192.168.4.1` routes directly over the Wi-Fi interface and works 100% reliably regardless of private DNS or cellular data fallback. `pirate.box` remains active as a local DNS alias.
-   - **Printed on Badge**: Step 2 QR code with direct URL `http://192.168.4.1/` printed clearly right beneath the code.
+2. **Primary Address: `http://10.42.0.1` (over `pirate.box`):**
+   - **Rationale**: Modern Android (Android 9+) has "Private DNS" (DNS-over-TLS to Google/Cloudflare over cellular) enabled by default. This causes custom domain names like `pirate.box` to fail on many devices. Direct IP `http://10.42.0.1` routes directly over the Wi-Fi interface and works 100% reliably regardless of private DNS or cellular data fallback. `pirate.box` remains active as a local DNS alias.
+   - **Printed on Badge**: Step 2 QR code with direct URL `http://10.42.0.1/` printed clearly right beneath the code.
 
 3. **Captive Probe Suppression & The Unified 2-Step Flow (Retiring `/board`):**
    - **Previous Mistake (The CNA Modal Trap & `/board`)**:
@@ -358,7 +358,7 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
        - Apple CNA probes (`/hotspot-detect.html`, etc.) return immediate `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`.
        - Android probes (`/generate_204`, etc.) return HTTP 204 No Content.
      - Devices stay quietly connected to `PirateHat` on the local subnet without launching intrusive, crippled captive sheets.
-     - The physical printed badge acts as the UI orchestrator: Step 1 joins Wi-Fi, and Step 2 opens `http://192.168.4.1/` directly in the phone's native browser (Safari on iOS, Chrome on Android).
+     - The physical printed badge acts as the UI orchestrator: Step 1 joins Wi-Fi, and Step 2 opens `http://10.42.0.1/` directly in the phone's native browser (Safari on iOS, Chrome on Android).
      - Native browsers have complete file-saving delegates: plundering downloads `.m4a` cleanly to the device's storage.
      - All legacy leftovers (`/board`, `/foe`, `/index.html`) have been removed.
 
@@ -389,21 +389,32 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 
 ### Pi System Setup Commands Executed / Required
 
-1. **Passwordless Sudo for User `benjamin`:**
+1. **Passwordless Sudo Configuration:**
    ```bash
-   echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/010_benjamin-nopasswd
+   echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/010_pi-nopasswd
    ```
 
 2. **NetworkManager Hotspot Setup (`wlan0`):**
    ```bash
-   sudo nmcli connection add type wifi ifname wlan0 con-name PirateHotspot autoconnect yes ssid PirateHat mode ap 802-11-wireless.band bg 802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk treasure ipv4.method shared ipv4.addresses 192.168.4.1/24 ipv6.method ignore
+   sudo nmcli connection add type wifi ifname wlan0 con-name PirateHotspot autoconnect yes ssid PirateHat mode ap 802-11-wireless.band bg 802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk treasure ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method ignore
    ```
 
 3. **NetworkManager Captive DNS Configuration (`/etc/NetworkManager/dnsmasq-shared.d/pirate.conf`):**
    ```
-   address=/#/192.168.4.1
-   address=/pirate.box/192.168.4.1
+   # Wildcard disabled (was causing Chrome to detect DNS poisoning):
+   # address=/#/10.42.0.1
+
+   address=/pirate.box/10.42.0.1
    dhcp-option=option:domain-name,pirate.box
+
+   # Short 2-minute lease time aggressively recycles IP addresses for high-turnover crowds
+   dhcp-range=10.42.0.2,10.42.0.254,255.255.255.0,2m
+
+   # Limit maximum concurrent leases tracked in dnsmasq memory
+   dhcp-lease-max=250
+
+   log-queries
+   log-dhcp
    ```
 
 4. **Systemd Unit (`/etc/systemd/system/pirate-server.service`):**
@@ -415,11 +426,11 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 
    [Service]
    Type=simple
-   User=benjamin
-   WorkingDirectory=/home/benjamin/nrsc5
+   User=pi
+   WorkingDirectory=/home/pi/nrsc5
    Environment=PIRATE_PORT=80
-   Environment=PIRATE_HOST=192.168.4.1
-   ExecStart=/usr/bin/python3 /home/benjamin/nrsc5/pirate_server/server.py
+   Environment=PIRATE_HOST=10.42.0.1
+   ExecStart=/usr/bin/python3 /home/pi/nrsc5/pirate_server/server.py
    Restart=always
    RestartSec=3
 
@@ -448,7 +459,7 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
    # Check status and see connected client hostnames/IPs:
    ./pirate_server/hotspot.sh status
 
-   # Switch back to home Wi-Fi (benhill6):
+   # Switch back to home Wi-Fi:
    ./pirate_server/hotspot.sh stop
 
    # Reactivate PirateHat hotspot on wlan0:
@@ -462,9 +473,9 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 
 | File / Component | Location | Role / Configuration |
 | :--- | :--- | :--- |
-| **Hotspot Profile** | `/etc/NetworkManager/system-connections/PirateHotspot.nmconnection` | SSID: `PirateHat`, WPA2: `treasure`, IP: `192.168.4.1/24`, `autoconnect=true` |
-| **dnsmasq Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `address=/#/192.168.4.1`, `address=/pirate.box/192.168.4.1`, `dhcp-option=option:domain-name,pirate.box` |
-| **DHCP Leases** | `/var/lib/NetworkManager/dnsmasq-wlan0.leases` | DHCP range: `192.168.4.10` - `192.168.4.254` |
+| **Hotspot Profile** | `/etc/NetworkManager/system-connections/PirateHotspot.nmconnection` | SSID: `PirateHat`, WPA2: `treasure`, IP: `10.42.0.1/24`, `autoconnect=true` |
+| **dnsmasq Drop-in** | `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf` | `address=/#/10.42.0.1`, `address=/pirate.box/10.42.0.1`, `dhcp-option=option:domain-name,pirate.box` |
+| **DHCP Leases** | `/var/lib/NetworkManager/dnsmasq-wlan0.leases` | DHCP range: `10.42.0.2` - `10.42.0.254` |
 | **Systemd Service** | `/etc/systemd/system/pirate-server.service` | Auto-starts `server.py` on Port 80, `After=NetworkManager.service` |
 | **Web Server** | `pirate_server/server.py` | Unified HTTP server: suppresses probes, serves chest at `/` and `/chest`, handles single-serving plundering |
 | **Treasure Chest** | `pirate_server/templates/chest.html` | Searchable song list, plunder confirmation modal, direct browser download, farewell redirect |
@@ -478,11 +489,11 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 To avoid repeating previous investigations or reverting working configurations, here is the empirical record of tests conducted on live hardware:
 
 #### Experiment 1: Universal Wildcard Captive Portal with "Copy Link to Safari"
-- **Configuration:** Default gateway advertised as `192.168.4.1`. DNS hijacked to `192.168.4.1`. All vendor probes served `portal.html` instructing users to copy `http://192.168.4.1` and open Safari/Chrome.
+- **Configuration:** Default gateway advertised as `10.42.0.1`. DNS hijacked to `10.42.0.1`. All vendor probes served `portal.html` instructing users to copy `http://10.42.0.1` and open Safari/Chrome.
 - **Android Outcome (SUCCESS):** Android launched `CaptivePortalLogin`. The user tapped "Plunder", Chrome download delegates initiated inside the webview, and the track (`Guns N' Roses - Welcome To The Jungle.m4a`) was downloaded to device storage and unlinked from the Pi.
 - **iOS Outcome (FAILURE):** Apple Captive Network Assistant (CNA) popped up. However:
   1. WebKit file-download delegates are completely stripped in CNA (RFC/Apple security sandbox).
-  2. When the user tapped "Cancel" to switch to Safari, iOS marked the captive network as abandoned, immediately severed the Wi-Fi association, and reconnected to ambient home Wi-Fi (`benhill6`). Safari then failed because the phone was no longer on `PirateHat`.
+  2. When the user tapped "Cancel" to switch to Safari, iOS marked the captive network as abandoned, immediately severed the Wi-Fi association, and reconnected to ambient home Wi-Fi. Safari then failed because the phone was no longer on `PirateHat`.
 
 #### Experiment 2: Unconditional Apple Probe Spoofing (`<TITLE>Success</TITLE>`)
 - **Configuration:** `/hotspot-detect.html` immediately returned HTTP 200 `<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>`.
@@ -490,12 +501,12 @@ To avoid repeating previous investigations or reverting working configurations, 
 
 #### Experiment 3: Strategy A from Research (DHCP Option 3 Gateway Nullification)
 - **Configuration:** Added `dhcp-option=3` to `dnsmasq` to omit the default router option (RFC 2132).
-- **Theory:** Mobile devices would treat the Pi as an unrouted local peripheral (like a GoPro or Wi-Fi SD card), preserve cellular data, suppress captive modals, and allow native browsers to reach `http://192.168.4.1/` directly via QR 2.
+- **Theory:** Mobile devices would treat the Pi as an unrouted local peripheral (like a GoPro or Wi-Fi SD card), preserve cellular data, suppress captive modals, and allow native browsers to reach `http://10.42.0.1/` directly via QR 2.
 - **Android (Pixel) Outcome (FAILURE):**
   1. Pixel connected without a captive modal.
-  2. Scanning QR 2 (`http://192.168.4.1/`) failed in Chrome with: *"The webpage at http://192.168.4.1/ might be temporarily down or moved permanently..."*.
+  2. Scanning QR 2 (`http://10.42.0.1/`) failed in Chrome with: *"The webpage at http://10.42.0.1/ might be temporarily down or moved permanently..."*.
   3. Server logs showed 0 packets received.
-  4. **Root Cause:** In modern Android, when a Wi-Fi link has no default gateway and fails connectivity checks, Android's `ConnectivityService` binds general applications (including Chrome) strictly to **Cellular Mobile Data**. Chrome attempts to route `192.168.4.1` out over the cellular carrier, where it is unroutable. Crucially, **only the system `CaptivePortalLogin` webview is explicitly socket-bound to the Wi-Fi interface**.
+  4. **Root Cause:** In modern Android, when a Wi-Fi link has no default gateway and fails connectivity checks, Android's `ConnectivityService` binds general applications (including Chrome) strictly to **Cellular Mobile Data**. Chrome attempts to route `10.42.0.1` out over the cellular carrier, where it is unroutable. Crucially, **only the system `CaptivePortalLogin` webview is explicitly socket-bound to the Wi-Fi interface**.
 
 ### Simple Unified 2-QR Plan (Identical for Both iOS and Android)
 
@@ -503,7 +514,7 @@ To avoid repeating previous investigations or reverting working configurations, 
 
 1. **Badge Layout:**
    - **QR Code 1 (Wi-Fi):** `WIFI:S:PirateHat;T:WPA;P:treasure;;`
-   - **QR Code 2 (Music Chest):** `http://192.168.4.1/`
+   - **QR Code 2 (Music Chest):** `http://10.42.0.1/`
 
 2. **User Workflow:**
    - **Step 1:** Visitor points camera at QR 1 and taps **Join**. Phone associates with `PirateHat`.
@@ -513,7 +524,7 @@ To avoid repeating previous investigations or reverting working configurations, 
 
 3. **Required Server State:**
    - **Probes Suppressed:** All probe endpoints (`/hotspot-detect.html`, `/generate_204`, etc.) return immediate standard success (`200 OK` / `204 No Content`). No OS launches a captive sheet.
-   - **Root Web Delivery:** `http://192.168.4.1/` serves `chest.html` directly.
+   - **Root Web Delivery:** `http://10.42.0.1/` serves `chest.html` directly.
 
 ```
                     [Visitor Points Camera at Badge]
@@ -547,9 +558,9 @@ To avoid repeating previous investigations or reverting working configurations, 
 Why this setup is **harder than an in-flight airplane portal**:
 - **On an airplane:** The passenger turns on **Airplane Mode**. The cellular baseband radio is completely disabled. Every networking socket on the device is forced onto `wlan0`. Local DNS hijacking and mDNS (`piratehat.local`) work seamlessly because there is zero competing WAN network.
 - **At a live venue / Maker Faire:** The visitor has **active 5G/LTE cellular data** enabled simultaneously with Wi-Fi:
-  1. **DNS-over-TLS / Private DNS:** Modern Android (Android 9+) queries DNS over TLS to Google (`8.8.8.8`) or Cloudflare over the cellular radio. If a domain name (like `pirate.box` or `piratehat.local`) is used, Android tries to resolve it via cellular DoT, which immediately fails. **Solution:** Step 2 on the badge points directly to the numeric IP address (`http://192.168.4.1/`), completely eliminating DNS lookup dependencies.
+  1. **DNS-over-TLS / Private DNS:** Modern Android (Android 9+) queries DNS over TLS to Google (`8.8.8.8`) or Cloudflare over the cellular radio. If a domain name (like `pirate.box` or `piratehat.local`) is used, Android tries to resolve it via cellular DoT, which immediately fails. **Solution:** Step 2 on the badge points directly to the numeric IP address (`http://10.42.0.1/`), completely eliminating DNS lookup dependencies.
   2. **Cellular Fallback / Wi-Fi Assist:** Both iOS (Wi-Fi Assist) and Android (NetworkSwitch / ConnectivityService) will silently route HTTP traffic over cellular if the Wi-Fi connection is flagged as dead or unauthenticated.
-  3. **Probe Suppression:** By having the web server spoof Apple's `<TITLE>Success</TITLE>` and Android's HTTP `204 No Content`, the phone's operating system concludes that the Wi-Fi connection is valid, suppressing intrusive system modals and keeping the socket routes bound to `192.168.4.1`.
+  3. **Probe Suppression:** By having the web server spoof Apple's `<TITLE>Success</TITLE>` and Android's HTTP `204 No Content`, the phone's operating system concludes that the Wi-Fi connection is valid, suppressing intrusive system modals and keeping the socket routes bound to `10.42.0.1`.
 
 #### Step-by-Step Platform Comparison Table
 
@@ -558,7 +569,7 @@ Why this setup is **harder than an in-flight airplane portal**:
 | **1. Scan Step 1 QR** | Native Camera detects Wi-Fi QR code (`WIFI:S:PirateHat;T:WPA;P:treasure;;`). Prompts *"Join 'PirateHat' Network"*. | Native Camera / Google Lens detects Wi-Fi QR code. Prompts *"Connect to PirateHat"*. |
 | **2. Association & Probe** | iPhone associates. `captiveagent` probes `captive.apple.com/hotspot-detect.html`. Server returns HTTP 200 `<TITLE>Success</TITLE>`. CNA popup is **suppressed**. | Phone associates. OS probes `connectivitycheck.gstatic.com/generate_204`. Server returns HTTP 204. `CaptivePortalLogin` webview is **suppressed**. |
 | **3. Ambient Connection Status** | iPhone displays Wi-Fi checkmark. If background WAN checks notice no route to internet, Wi-Fi icon may appear without error. | Status bar shows Wi-Fi icon. Some models may show a passive notification *"Wi-Fi has no internet access. Tap to stay connected"*. |
-| **4. Scan Step 2 QR** | Native Camera detects `http://192.168.4.1/`. Prompts *"Open in Safari"*. User taps banner. | Native Camera detects `http://192.168.4.1/`. Prompts *"Open in Chrome"*. User taps banner. |
+| **4. Scan Step 2 QR** | Native Camera detects `http://10.42.0.1/`. Prompts *"Open in Safari"*. User taps banner. | Native Camera detects `http://10.42.0.1/`. Prompts *"Open in Chrome"*. User taps banner. |
 | **5. Chest Experience** | Safari opens full browser tab to `chest.html`. Full JavaScript, smooth scrolling, and live search active. | Chrome opens full browser tab to `chest.html`. Full JavaScript, smooth scrolling, and live search active. |
 | **6. Plunder Action** | User taps "PLUNDER" -> modal confirms -> taps "CLAIM & DOWNLOAD". Invisible link triggers single GET `/download`. | User taps "PLUNDER" -> modal confirms -> taps "CLAIM & DOWNLOAD". Invisible link triggers single GET `/download`. |
 | **7. Native File Download** | Safari intercepts `Content-Disposition: attachment` and prompts: *"Do you want to download '[Title].m4a'?"*. User taps **Download**. | Chrome intercepts attachment and immediately displays notification: *"Downloading file... [Open]"*. |
@@ -587,6 +598,48 @@ Why this setup is **harder than an in-flight airplane portal**:
 4. **Mistake: Over-Complicated Badge Layout**
    - *Symptom:* Previous badge was "2 QR codes then a bunch of words below" with redundant credentials blocks, numbered rule lists, and camera instructions.
    - *Solution:* Redesigned into a punchy, high-contrast 2-step card via `generate_qr.py`. Embedded self-contained vector pirate hat art, placed credentials directly beneath QR 1, placed the direct URL directly beneath QR 2, and stripped all bottom clutter.
+
+5. **Discovery: DNS Wildcard Hijack Poisoned Chrome's Trust Model**
+   - *Symptom:* Chrome Mobile on Android displayed `ERR_TOO_MANY_RETRIES` on the initial setup. Server logs showed `POST /chat HTTP/1.1` arriving from background apps (RCS/Google Chat) whose domains had been hijacked.
+   - *Root Cause:* `address=/#/10.42.0.1` in `dnsmasq` resolved **every domain on earth** to the Pi. Chrome's background Safe Browsing, DoH, and certificate revocation checks all resolved to `10.42.0.1`, causing Chrome to flag the connection as hostile/captive and refuse to load pages.
+   - *Solution:* Disabled the wildcard. Only `pirate.box` resolves to `10.42.0.1`; all other queries pass through to upstream DNS or return NXDOMAIN.
+
+6. **Discovery: Fake Captive Probe Responses Caused Android Validation Contradiction**
+   - *Symptom:* Even after removing the DNS wildcard, Chrome Mobile continued to fail with `ERR_TOO_MANY_RETRIES`.
+   - *Root Cause:* `server.py` spoofed `HTTP 204 No Content` for Android's `/generate_204` probes. When Android received HTTP 204 (claiming "internet works") but could not establish outbound TLS to `https://connectivitycheck.gstatic.com/generate_204` or reach Private DNS (`dns.google:853`), Android identified a validation contradiction and activated network defense: locking third-party app sockets (Chrome) to cellular, causing `ERR_TOO_MANY_RETRIES`.
+   - *Solution:* Completely removed `handle_captive_probes()` and all OS probe spoofing from `server.py`. Unknown paths now return standard `404 Not Found`.
+
+7. **Discovery: Half-Finished Self-Signed HTTPS Created TLS Handshake Loops**
+   - *Symptom:* When port 443 was open with a self-signed certificate, Chrome Mobile looped on TLS handshakes and compounded `ERR_TOO_MANY_RETRIES`.
+   - *Root Cause:* The self-signed certificate lacked `subjectAltName` (SAN) extensions required by Chromium (RFC 2818), causing instant rejection. Chrome would attempt HTTPS upgrade → TLS handshake → cert rejection → retry → repeat until `ERR_TOO_MANY_RETRIES`.
+   - *Solution:* Removed HTTPS listener, `import ssl`, `cert.pem`, and `key.pem`. Server now runs clean single-port HTTP on port 80 only.
+
+8. **Fix: Wi-Fi Power Management Disabled & CPU Underclocked**
+   - *Problem:* `iw dev wlan0 get power_save` showed `Power save: on`, and `vcgencmd get_throttled` returned `0x50005` (active under-voltage + frequency capping). Combined: the Broadcom BCM43455 radio was cycling to sleep periodically, and the USB voltage was drooping under load, causing `tx failed: 318` packets.
+   - *Solution:* Disabled Wi-Fi power save (`nmcli connection modify PirateHotspot 802-11-wireless.powersave 2`). Capped CPU at 1.0 GHz (`scaling_max_freq=1000000`) to reduce peak current draw ~40-50% and eliminate brownouts when running on battery.
+
+9. **Control Test: Secondary Phone (No Corp Profile) Works Instantly**
+   - *Event:* A secondary test phone (no SIM, no enterprise profile) connected to `PirateHat` and navigated to `http://10.42.0.1/`.
+   - *Result:* Immediate `HTTP 200 OK`. Full page load: `chest.html`, `style.css`, `map_bg.jpg` — all in under 200ms.
+   - *Significance:* Confirms the entire server stack, Wi-Fi AP, DHCP, template rendering, and static file delivery work correctly over 802.11. Isolates the failure strictly to the primary corporate Pixel device.
+
+10. **DEFINITIVE DIAGNOSIS: Chrome HTTPS-Only Enterprise Policy on `Corp Phone`**
+    - *Date:* September 19, 2026 (evening session).
+    - *Test Conditions:* Primary Pixel rebooted → Airplane Mode enabled (cellular off) → Wi-Fi connected to `PirateHat` (DHCP `10.42.0.34`) → Fresh Chrome Incognito tab → Navigated to `http://10.42.0.1`.
+    - *Result:* `ERR_TOO_MANY_RETRIES`.
+    - *Kernel-Level Proof (nftables `table inet debug_trace` counters for `10.42.0.34`):*
+      | Counter | Packets | Meaning |
+      | :--- | :--- | :--- |
+      | `tcp dport 80` | **0** | Zero HTTP connection attempts |
+      | `tcp dport 443` | **1** | One HTTPS SYN attempt |
+      | `tcp dport 853` | **0** | No DNS-over-TLS attempts |
+      | `udp dport 53` | **399** | DNS queries working normally |
+    - *Conclusion:* Even when typing an explicit `http://` scheme in a clean Incognito session with cellular completely disabled, **Chrome on this device forcibly upgrades `http://10.42.0.1` to HTTPS on port 443**. Because port 443 is closed, the kernel returns `TCP RST`. Chrome refuses to fall back to port 80 (enforcing HTTPS-Only / `HttpsUpgrades` policy), retries the HTTPS handshake, and aborts with `ERR_TOO_MANY_RETRIES`. The secondary non-corporate phone does not enforce this upgrade, connecting directly to port 80 without issue.
+    - *Root Cause:* The device hostname `Corp Phone` indicates a Google Corporate MDM / Android Enterprise Work Profile. Chrome Enterprise policy `HttpsOnlyMode` (or equivalent managed `HttpsUpgrades` flag) forces all navigations to HTTPS before any TCP SYN is emitted. This is a **device-level browser policy** that cannot be overridden from the server side via any HTTP, DNS, or network-layer configuration.
+    - *Remediation Options:*
+      1. **Device-side:** Check `chrome://flags/#https-upgrades` and `chrome://flags/#https-only-mode-setting` on the Pixel. If manageable, disable them. Check `chrome://policy` for enterprise-managed `HttpsOnlyMode`.
+      2. **Server-side (hybrid):** Re-enable HTTPS on port 443 with a properly constructed self-signed certificate (including `subjectAltName IP:10.42.0.1`). Corp-locked Chrome phones would see a one-time certificate warning ("Advanced → Proceed"), after which the page loads normally. Normal phones continue to use port 80 seamlessly.
+      3. **Accept limitation:** Personal phones (i.e., nearly all Maker Faire visitors) work perfectly on port 80. The corporate Pixel is the edge case.
 
 ---
 

@@ -3,7 +3,7 @@
 Generates the simplified 2-step printable badge for the Pirate Hat:
 Step 1 QR: Wi-Fi Credentials (WIFI:S:PirateHat;T:WPA;P:treasure;;)
            Network (SSID) and Password clearly printed right beneath it.
-Step 2 QR: Target Browser URL (http://192.168.4.1/)
+Step 2 QR: Target Browser URL (http://10.42.0.1/index.html)
            Direct URL/IP clearly printed right beneath it.
 
 Generates 100% offline, self-contained base64 PNG images embedded in the HTML.
@@ -30,9 +30,9 @@ def generate_base64_qr(data_text):
     b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{b64}"
 
-def generate_html_card(ssid="PirateHat", password="treasure", ip="192.168.4.1", output_html="pirate_badge.html"):
+def generate_html_card(ssid="PirateHat", password="treasure", ip="10.42.0.1", output_html="pirate_badge.html"):
     wifi_str = f"WIFI:S:{ssid};T:WPA;P:{password};;"
-    url_str = f"http://{ip}/"
+    url_str = f"http://{ip}/index.html"
 
     # Load pirate hat vector art for self-contained branding
     hat_svg_path = os.path.join(os.path.dirname(__file__), "static", "pirate_hat.svg")

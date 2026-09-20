@@ -9,7 +9,7 @@ import threading
 import subprocess
 
 PORT = int(os.environ.get("PIRATE_PORT", 80))
-HOST = os.environ.get("PIRATE_HOST", "192.168.4.1")
+HOST = os.environ.get("PIRATE_HOST", "10.42.0.1")
 RECORDINGS_DIR = os.environ.get("RECORDINGS_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "recordings")))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,13 +54,22 @@ def schedule_farewell_deauth(ip):
     threading.Thread(target=_delayed, daemon=True).start()
 
 def run_station_reaper():
-    """Background daemon: periodically evicts devices idle for >= 45 seconds."""
+    """
+    Background daemon: evicts stale Wi-Fi stations to prevent hitting
+    the Raspberry Pi Wi-Fi chipset hardware limit (8-10 clients max).
+
+    Adaptive thresholds:
+    - Normal (fewer than 6 clients connected): 240 seconds (4 minutes) idle timeout
+      to give users plenty of time to connect, browse, and download.
+    - Crowded (6 or more clients connected): 90 seconds idle timeout to recycle slots.
+    """
     while True:
         time.sleep(20)
         try:
             res = subprocess.run(["sudo", "iw", "dev", "wlan0", "station", "dump"],
                                  capture_output=True, text=True, timeout=5)
             if res.returncode == 0 and res.stdout:
+                stations = []
                 current_mac = None
                 for line in res.stdout.splitlines():
                     line = line.strip()
@@ -70,10 +79,21 @@ def run_station_reaper():
                         parts = line.split()
                         if "inactive" in parts:
                             idx = parts.index("inactive")
-                            inactive_ms = int(parts[idx + 2])
-                            if inactive_ms >= 45000:
-                                deauth_mac(current_mac)
-                                current_mac = None
+                            try:
+                                inactive_ms = int(parts[idx + 2])
+                                stations.append((current_mac, inactive_ms))
+                            except (ValueError, IndexError):
+                                pass
+                            current_mac = None
+
+                total_clients = len(stations)
+                # 4 minutes idle under normal conditions, 90 seconds under high pressure
+                threshold_ms = 90000 if total_clients >= 6 else 240000
+
+                for mac, inactive_ms in stations:
+                    if inactive_ms >= threshold_ms:
+                        print(f"[PIRATE] Evicting idle station {mac} (inactive {inactive_ms // 1000}s, {total_clients} connected)")
+                        deauth_mac(mac)
         except Exception:
             pass
 
@@ -209,80 +229,10 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         content = content.replace("{{ host }}", HOST)
         return content
 
-    def handle_captive_probes(self, path):
-        """
-        Suppresses OS captive portal popups by returning expected success responses.
-        This allows devices (iOS & Android) to stay connected quietly without
-        spawning restricted captive sheets. The user then navigates directly
-        in Safari or Chrome to http://192.168.4.1/ via Step 2 QR code.
-        """
-        host = self.headers.get("Host", "").lower().split(":")[0]
-
-        # 1. iOS / Apple captive checks: spoof Success so iOS does not launch CNA sheet
-        apple_domains = {
-            "captive.apple.com", "airport.us", "www.airport.us",
-            "ibook.info", "www.ibook.info", "itools.info", "www.itools.info",
-            "thinkdifferent.us", "www.thinkdifferent.us",
-            "appleiphonecell.com", "www.appleiphonecell.com"
-        }
-        apple_paths = (
-            "/hotspot-detect.html", "/canonical.html",
-            "/library/test/success.html", "/success.html"
-        )
-        if path in apple_paths or host in apple_domains:
-            data = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(data)
-            return True
-
-        # 2. Android probes: return HTTP 204 No Content so Android does not launch CaptivePortalLogin
-        android_domains = {
-            "connectivitycheck.gstatic.com", "connectivitycheck.android.com",
-            "clients3.google.com", "play.googleapis.com"
-        }
-        if path in ("/generate_204", "/gen_204") or path.endswith("/generate_204") or host in android_domains:
-            self.send_response(204)
-            self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            return True
-
-        # 3. Windows / Desktop probes
-        if path in ("/connecttest.txt", "/ncsi.txt") or host in ("www.msftconnecttest.com", "www.msftncsi.com"):
-            data = b"Microsoft Connect Test"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(data)
-            return True
-
-        # 4. Firefox / Linux probes
-        if path in ("/success.txt",) or host in ("detectportal.firefox.com", "connectivity-check.ubuntu.com"):
-            data = b"success\n"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(data)
-            return True
-
-        return False
-
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
-
-        # 1. Handle OS Captive Portal Probes (suppresses captive sheets)
-        if self.handle_captive_probes(path):
-            return
 
         # 2. Static assets
         if path.startswith("/static/"):
@@ -360,7 +310,7 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
             # Protection against Apple CNA file deletion bug:
             # If request is from an Apple captive popup, do NOT stream & delete!
             if self.is_cna_client():
-                self.send_error(403, "Apple blocks saving songs in this preview window. Copy http://192.168.4.1 into Safari to plunder!")
+                self.send_error(403, f"Apple blocks saving songs in this preview window. Copy http://{HOST}/index.html into Safari to plunder!")
                 return
 
             filename = os.path.basename(full_path)
@@ -393,10 +343,8 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 print(f"[PIRATE] Download error for {filename}: {e}")
             return
 
-        # Catch-all: redirect any unknown paths to root landing page
-        self.send_response(302)
-        self.send_header("Location", "/")
-        self.end_headers()
+        # Unknown path: standard 404 (allows OS captive probes like /generate_204 to cleanly fail)
+        self.send_error(404, "Treasure not found!")
 
 def run_server():
     print("=" * 60)

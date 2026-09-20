@@ -11,8 +11,13 @@ case "$ACTION" in
     sudo systemctl restart pirate-server
     ;;
   stop)
-    echo "[PIRATE] Deactivating hotspot and reconnecting to home Wi-Fi..."
-    sudo nmcli connection up netplan-wlan0-benhill6
+    echo "[PIRATE] Deactivating hotspot and reconnecting to local Wi-Fi..."
+    CLIENT_CON=$(nmcli -t -f NAME,TYPE connection show | awk -F: '($2=="802-11-wireless" || $2=="wifi") && $1!="PirateHotspot" {print $1; exit}')
+    if [ -n "$CLIENT_CON" ]; then
+      sudo nmcli connection up "$CLIENT_CON"
+    else
+      sudo nmcli connection down PirateHotspot
+    fi
     ;;
   status)
     echo "============================================================"
