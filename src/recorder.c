@@ -23,8 +23,8 @@
 #define DEFAULT_MIN_SONG_PACKETS 1292  /* 60 seconds */
 #define LOT_CACHE_SIZE 8
 #define MAX_PATH_LEN 1024
-#define MAX_PREROLL_FRAMES 128
-#define DEFAULT_PREROLL_SEC 2.5
+#define DEFAULT_PREROLL_SEC 15.0
+#define DEFAULT_POSTROLL_SEC 15.0
 
 typedef struct {
     unsigned int lot_id;
@@ -38,37 +38,48 @@ typedef struct {
     size_t len;
 } preroll_frame_t;
 
+typedef struct active_track {
+    FILE *tmp_fp;
+    char tmp_path[MAX_PATH_LEN * 2];
+    char title[256];
+    char artist[256];
+    char album[256];
+    int xhdr_lot;
+    uint8_t *art_data;
+    size_t art_size;
+    char art_ext[8];
+
+    unsigned long packets_preroll;
+    unsigned long packets_body;
+    unsigned long packets_postroll;
+
+    int is_postroll;
+    size_t postroll_frames_remaining;
+
+    struct active_track *next;
+} active_track_t;
+
 struct song_recorder {
     char base_dir[MAX_PATH_LEN];
     double split_delay_sec;
     double preroll_sec;
+    double postroll_sec;
     unsigned int program;
     unsigned long min_song_packets;
 
     hdc2aac_remuxer_t *remuxer;
 
-    /* Pre-roll ring buffer */
-    preroll_frame_t preroll[MAX_PREROLL_FRAMES];
+    /* Continuous pre-roll ring buffer */
+    preroll_frame_t *preroll;
     size_t preroll_head;
     size_t preroll_count;
     size_t preroll_capacity;
 
     int has_seen_first_transition;
     int record_initial;
-    char current_artist[256];
-    char current_title[256];
-    char current_album[256];
-    int current_xhdr_lot;
-    unsigned long current_packets;
-    time_t current_start_time;
 
-    char tmp_path[MAX_PATH_LEN * 2];
-    FILE *tmp_fp;
-
-    /* Cover art for current track */
-    uint8_t *current_art_data;
-    size_t current_art_size;
-    char current_art_ext[8];
+    /* Active tracks linked list */
+    active_track_t *tracks;
 
     /* Recent LOT image cache */
     lot_cache_entry_t lot_cache[LOT_CACHE_SIZE];
@@ -169,7 +180,20 @@ static void resolve_destination_paths(char *out_path, size_t maxlen,
 }
 
 /* ------------------------------------------------------------------ */
-/* Background Worker for Non-Blocking Remuxing (Bug 2.1 & Bug 2.2)   */
+/* Track Lookup Helpers                                               */
+
+static active_track_t *get_primary_track(song_recorder_t *rec)
+{
+    active_track_t *t = rec->tracks;
+    while (t) {
+        if (!t->is_postroll) return t;
+        t = t->next;
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* Background Worker for Non-Blocking Remuxing                       */
 
 typedef struct {
     char input_aac_path[MAX_PATH_LEN * 2];
@@ -181,6 +205,12 @@ typedef struct {
     char album[256];
     double duration_sec;
     unsigned long packets;
+    double offset_front_sec;
+    double offset_end_sec;
+    double meta_duration_sec;
+    unsigned long packets_preroll;
+    unsigned long packets_body;
+    unsigned long packets_postroll;
 } remux_job_t;
 
 static void *remux_worker_thread(void *arg)
@@ -189,7 +219,8 @@ static void *remux_worker_thread(void *arg)
     if (!job) return NULL;
 
     char meta_title[512], meta_artist[512], meta_album[512];
-    char *argv[32];
+    char meta_comment[256], meta_off_front[64], meta_off_end[64];
+    char *argv[48];
     int argc = 0;
 
     argv[argc++] = "ffmpeg";
@@ -218,6 +249,20 @@ static void *remux_worker_thread(void *arg)
         snprintf(meta_album, sizeof(meta_album), "album=%s", job->album);
         argv[argc++] = "-metadata"; argv[argc++] = meta_album;
     }
+
+    /* Embedded boundary offsets inside M4A metadata */
+    snprintf(meta_comment, sizeof(meta_comment),
+             "comment=offset_front=%.3f;offset_end=%.3f;meta_duration=%.3f;total_duration=%.3f",
+             job->offset_front_sec, job->offset_end_sec,
+             job->meta_duration_sec, job->duration_sec);
+    argv[argc++] = "-metadata"; argv[argc++] = meta_comment;
+
+    snprintf(meta_off_front, sizeof(meta_off_front), "nrsc5_offset_front=%.3f", job->offset_front_sec);
+    argv[argc++] = "-metadata"; argv[argc++] = meta_off_front;
+
+    snprintf(meta_off_end, sizeof(meta_off_end), "nrsc5_offset_end=%.3f", job->offset_end_sec);
+    argv[argc++] = "-metadata"; argv[argc++] = meta_off_end;
+
     argv[argc++] = job->final_audio_path;
     argv[argc] = NULL;
 
@@ -235,7 +280,7 @@ static void *remux_worker_thread(void *arg)
         }
     }
 
-    /* Bug 2.2: Verify size and auto-unlink on failure or broken stub */
+    /* Verify size and auto-unlink on failure or broken stub */
     struct stat st;
     int is_valid = (remux_ok && stat(job->final_audio_path, &st) == 0 && st.st_size > 1024);
 
@@ -243,15 +288,40 @@ static void *remux_worker_thread(void *arg)
         unlink(job->final_audio_path);
         log_error("[RECORDER] Failed to finalize \"%s\": ffmpeg remux error or empty output (unlinked)", job->title);
     } else {
+        /* Write companion info text file alongside the M4A */
+        char txt_path[MAX_PATH_LEN * 4];
+        strncpy(txt_path, job->final_audio_path, sizeof(txt_path) - 1);
+        txt_path[sizeof(txt_path) - 1] = '\0';
+        char *dot = strrchr(txt_path, '.');
+        if (dot) strcpy(dot, ".txt");
+        else strncat(txt_path, ".txt", sizeof(txt_path) - strlen(txt_path) - 1);
+
+        FILE *txt_fp = fopen(txt_path, "w");
+        if (txt_fp) {
+            fprintf(txt_fp, "title: %s\n", job->title);
+            fprintf(txt_fp, "artist: %s\n", job->artist);
+            fprintf(txt_fp, "album: %s\n", job->album[0] ? job->album : "");
+            fprintf(txt_fp, "offset_front_sec: %.3f\n", job->offset_front_sec);
+            fprintf(txt_fp, "offset_end_sec: %.3f\n", job->offset_end_sec);
+            fprintf(txt_fp, "meta_duration_sec: %.3f\n", job->meta_duration_sec);
+            fprintf(txt_fp, "total_duration_sec: %.3f\n", job->duration_sec);
+            fprintf(txt_fp, "preroll_packets: %lu\n", job->packets_preroll);
+            fprintf(txt_fp, "song_packets: %lu\n", job->packets_body);
+            fprintf(txt_fp, "postroll_packets: %lu\n", job->packets_postroll);
+            fprintf(txt_fp, "total_packets: %lu\n", job->packets);
+            fclose(txt_fp);
+        }
+
         unsigned int mins = (unsigned int)(job->duration_sec / 60);
         unsigned int secs = (unsigned int)(job->duration_sec) % 60;
-        log_info("[RECORDER] Saved: \"%s\" by \"%s\"%s%s%s (%u:%02u, %lu packets%s) -> %s",
+        log_info("[RECORDER] Saved: \"%s\" by \"%s\"%s%s%s (%u:%02u, %lu packets%s, offsets: front=%.2fs, end=%.2fs) -> %s",
                  job->title, job->artist,
                  job->album[0] ? " (Album: \"" : "",
                  job->album[0] ? job->album : "",
                  job->album[0] ? "\")" : "",
                  mins, secs, job->packets,
                  job->has_art ? ", embedded art" : "",
+                 job->offset_front_sec, job->offset_end_sec,
                  job->final_audio_path);
     }
 
@@ -270,26 +340,31 @@ static unsigned long g_song_seq = 0;
 /* ------------------------------------------------------------------ */
 /* Song Lifecycle: Finalize & Open                                    */
 
-static void finalize_current_song(song_recorder_t *rec)
+static void finalize_track(song_recorder_t *rec, active_track_t *track)
 {
-    if (!rec->tmp_fp) return;
+    if (!track->tmp_fp) return;
 
-    fclose(rec->tmp_fp);
-    rec->tmp_fp = NULL;
+    fclose(track->tmp_fp);
+    track->tmp_fp = NULL;
 
-    double duration_sec = rec->current_packets * 0.0464399;
-    int has_valid_metadata = (rec->current_title[0] != '\0' &&
-                              rec->current_artist[0] != '\0' &&
-                              strcmp(rec->current_title, "Unknown") != 0);
+    unsigned long total_packets = track->packets_preroll + track->packets_body + track->packets_postroll;
+    double duration_sec = total_packets * 0.0464399;
+    double offset_front_sec = track->packets_preroll * 0.0464399;
+    double offset_end_sec = track->packets_postroll * 0.0464399;
+    double meta_duration_sec = track->packets_body * 0.0464399;
 
-    if (rec->current_packets >= rec->min_song_packets && has_valid_metadata) {
+    int has_valid_metadata = (track->title[0] != '\0' &&
+                              track->artist[0] != '\0' &&
+                              strcmp(track->title, "Unknown") != 0);
+
+    if (total_packets >= rec->min_song_packets && has_valid_metadata) {
         char artist_dir[MAX_PATH_LEN * 2];
         char final_audio[MAX_PATH_LEN * 4];
         char clean_artist[256];
         char clean_title[256];
 
-        sanitize_filename(clean_artist, rec->current_artist, sizeof(clean_artist));
-        sanitize_filename(clean_title, rec->current_title, sizeof(clean_title));
+        sanitize_filename(clean_artist, track->artist, sizeof(clean_artist));
+        sanitize_filename(clean_title, track->title, sizeof(clean_title));
 
         snprintf(artist_dir, sizeof(artist_dir), "%s/%s", rec->base_dir, clean_artist);
         mkdir_p(artist_dir);
@@ -300,12 +375,12 @@ static void finalize_current_song(song_recorder_t *rec)
         /* Stage cover art for ffmpeg embedding if available */
         char tmp_art_path[MAX_PATH_LEN * 4];
         int has_art = 0;
-        if (rec->current_art_data && rec->current_art_size > 0) {
+        if (track->art_data && track->art_size > 0) {
             snprintf(tmp_art_path, sizeof(tmp_art_path), "%s/.tmp_art_%d_%lu_%lu%s",
-                     artist_dir, (int)getpid(), (unsigned long)time(NULL), ++g_song_seq, rec->current_art_ext);
+                     artist_dir, (int)getpid(), (unsigned long)time(NULL), ++g_song_seq, track->art_ext);
             FILE *art_fp = fopen(tmp_art_path, "wb");
             if (art_fp) {
-                fwrite(rec->current_art_data, 1, rec->current_art_size, art_fp);
+                fwrite(track->art_data, 1, track->art_size, art_fp);
                 fclose(art_fp);
                 has_art = 1;
             }
@@ -315,9 +390,8 @@ static void finalize_current_song(song_recorder_t *rec)
         char staging_aac[MAX_PATH_LEN * 2];
         snprintf(staging_aac, sizeof(staging_aac), "%s/.staging_%d_%lu_%lu.aac",
                  rec->base_dir, (int)getpid(), (unsigned long)time(NULL), ++g_song_seq);
-        if (rename(rec->tmp_path, staging_aac) != 0) {
-            /* Fallback copy path if rename fails across filesystems */
-            snprintf(staging_aac, sizeof(staging_aac), "%s", rec->tmp_path);
+        if (rename(track->tmp_path, staging_aac) != 0) {
+            snprintf(staging_aac, sizeof(staging_aac), "%s", track->tmp_path);
         }
 
         remux_job_t *job = calloc(1, sizeof(*job));
@@ -328,125 +402,133 @@ static void finalize_current_song(song_recorder_t *rec)
             if (has_art) {
                 snprintf(job->tmp_art_path, sizeof(job->tmp_art_path), "%s", tmp_art_path);
             }
-            snprintf(job->title, sizeof(job->title), "%s", rec->current_title);
-            snprintf(job->artist, sizeof(job->artist), "%s", rec->current_artist);
-            snprintf(job->album, sizeof(job->album), "%s", rec->current_album);
+            snprintf(job->title, sizeof(job->title), "%s", track->title);
+            snprintf(job->artist, sizeof(job->artist), "%s", track->artist);
+            snprintf(job->album, sizeof(job->album), "%s", track->album);
             job->duration_sec = duration_sec;
-            job->packets = rec->current_packets;
+            job->packets = total_packets;
+            job->offset_front_sec = offset_front_sec;
+            job->offset_end_sec = offset_end_sec;
+            job->meta_duration_sec = meta_duration_sec;
+            job->packets_preroll = track->packets_preroll;
+            job->packets_body = track->packets_body;
+            job->packets_postroll = track->packets_postroll;
 
-            /* Launch detached background packaging worker (Bug 2.1) */
+            /* Launch detached background packaging worker */
             pthread_t tid;
             pthread_attr_t attr;
             pthread_attr_init(&attr);
             pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
             if (pthread_create(&tid, &attr, remux_worker_thread, job) != 0) {
-                log_error("[RECORDER] Failed to spawn background remux thread for \"%s\", executing synchronously", rec->current_title);
+                log_error("[RECORDER] Failed to spawn background remux thread for \"%s\", executing synchronously", track->title);
                 remux_worker_thread(job);
             }
             pthread_attr_destroy(&attr);
             rec->total_songs_saved++;
         } else {
-            log_error("[RECORDER] Out of memory allocating remux job for \"%s\"", rec->current_title);
+            log_error("[RECORDER] Out of memory allocating remux job for \"%s\"", track->title);
             if (has_art) unlink(tmp_art_path);
             unlink(staging_aac);
         }
     } else {
-        unlink(rec->tmp_path);
+        unlink(track->tmp_path);
         log_info("[RECORDER] Discarded non-song/interstitial: \"%s - %s\" (%.1fs < %lus)",
-                 rec->current_artist, rec->current_title, duration_sec,
+                 track->artist, track->title, duration_sec,
                  (unsigned long)(rec->min_song_packets * 0.0464399));
         rec->total_interstitials_discarded++;
     }
 
-    /* Reset track cover art */
-    free(rec->current_art_data);
-    rec->current_art_data = NULL;
-    rec->current_art_size = 0;
-    rec->current_art_ext[0] = '\0';
-    rec->current_packets = 0;
+    if (track->art_data) {
+        free(track->art_data);
+        track->art_data = NULL;
+        track->art_size = 0;
+    }
 }
 
 static void start_new_song(song_recorder_t *rec, const char *title, const char *artist, const char *album, int xhdr_lot)
 {
-    free(rec->current_art_data);
-    rec->current_art_data = NULL;
-    rec->current_art_size = 0;
-    rec->current_art_ext[0] = '\0';
+    /* If an active non-postroll track is running, transition it to post-roll */
+    active_track_t *cur = get_primary_track(rec);
+    if (cur) {
+        if (rec->postroll_sec > 0.0) {
+            cur->is_postroll = 1;
+            cur->postroll_frames_remaining = (size_t)(rec->postroll_sec * 21.533 + 0.5);
+            log_info("[RECORDER] Track \"%s\" entered post-roll (%.2fs, %zu frames)",
+                     cur->title, rec->postroll_sec, cur->postroll_frames_remaining);
+        } else {
+            finalize_track(rec, cur);
+        }
+    }
 
-    strncpy(rec->current_title, title ? title : "", sizeof(rec->current_title) - 1);
-    rec->current_title[sizeof(rec->current_title) - 1] = '\0';
+    /* Allocate new active track */
+    active_track_t *new_track = calloc(1, sizeof(active_track_t));
+    if (!new_track) {
+        log_error("[RECORDER] Failed to allocate active track for \"%s\"", title ? title : "");
+        return;
+    }
 
-    strncpy(rec->current_artist, artist ? artist : "", sizeof(rec->current_artist) - 1);
-    rec->current_artist[sizeof(rec->current_artist) - 1] = '\0';
-
-    strncpy(rec->current_album, album ? album : "", sizeof(rec->current_album) - 1);
-    rec->current_album[sizeof(rec->current_album) - 1] = '\0';
-
-    rec->current_xhdr_lot = xhdr_lot;
-    rec->current_packets = 0;
-    rec->current_start_time = time(NULL);
+    strncpy(new_track->title, title ? title : "", sizeof(new_track->title) - 1);
+    strncpy(new_track->artist, artist ? artist : "", sizeof(new_track->artist) - 1);
+    strncpy(new_track->album, album ? album : "", sizeof(new_track->album) - 1);
+    new_track->xhdr_lot = xhdr_lot;
 
     /* Check LOT cache for matching cover art */
     if (xhdr_lot >= 0) {
         for (int i = 0; i < LOT_CACHE_SIZE; i++) {
             if (rec->lot_cache[i].data && (int)rec->lot_cache[i].lot_id == xhdr_lot) {
-                rec->current_art_data = malloc(rec->lot_cache[i].size);
-                if (rec->current_art_data) {
-                    memcpy(rec->current_art_data, rec->lot_cache[i].data, rec->lot_cache[i].size);
-                    rec->current_art_size = rec->lot_cache[i].size;
-                    strncpy(rec->current_art_ext, rec->lot_cache[i].ext, sizeof(rec->current_art_ext) - 1);
-                    rec->current_art_ext[sizeof(rec->current_art_ext) - 1] = '\0';
+                new_track->art_data = malloc(rec->lot_cache[i].size);
+                if (new_track->art_data) {
+                    memcpy(new_track->art_data, rec->lot_cache[i].data, rec->lot_cache[i].size);
+                    new_track->art_size = rec->lot_cache[i].size;
+                    strncpy(new_track->art_ext, rec->lot_cache[i].ext, sizeof(new_track->art_ext) - 1);
                 }
                 break;
             }
         }
     }
 
-    /* Bug 2.3: Dynamic PID and sequence naming guarantees zero file collisions */
-    snprintf(rec->tmp_path, sizeof(rec->tmp_path), "%s/.tmp_rec_%d_%lu_%lu.aac",
+    snprintf(new_track->tmp_path, sizeof(new_track->tmp_path), "%s/.tmp_rec_%d_%lu_%lu.aac",
              rec->base_dir, (int)getpid(), (unsigned long)time(NULL), ++g_song_seq);
-    rec->tmp_fp = fopen(rec->tmp_path, "wb");
-    if (!rec->tmp_fp) {
-        log_error("[RECORDER] Failed to create staging file %s: %s", rec->tmp_path, strerror(errno));
+    new_track->tmp_fp = fopen(new_track->tmp_path, "wb");
+    if (!new_track->tmp_fp) {
+        log_error("[RECORDER] Failed to create staging file %s: %s", new_track->tmp_path, strerror(errno));
+        if (new_track->art_data) free(new_track->art_data);
+        free(new_track);
         return;
     }
 
-    /* Prepend pre-roll buffer frames to capture song intro */
-    if (rec->preroll_count > 0 && rec->preroll_capacity > 0) {
-        size_t start_idx;
-        if (rec->preroll_count < rec->preroll_capacity) {
-            start_idx = 0;
-        } else {
-            start_idx = rec->preroll_head;
-        }
-
+    /* Prepend continuous pre-roll buffer */
+    if (rec->preroll && rec->preroll_count > 0 && rec->preroll_capacity > 0) {
+        size_t start_idx = (rec->preroll_count < rec->preroll_capacity) ? 0 : rec->preroll_head;
         for (size_t i = 0; i < rec->preroll_count; i++) {
             size_t idx = (start_idx + i) % rec->preroll_capacity;
             preroll_frame_t *frame = &rec->preroll[idx];
             if (frame->len > 0) {
-                fwrite(frame->data, 1, frame->len, rec->tmp_fp);
-                rec->current_packets++;
+                fwrite(frame->data, 1, frame->len, new_track->tmp_fp);
+                new_track->packets_preroll++;
             }
         }
-        log_info("[RECORDER] Prepended %zu pre-roll frames (%.2fs) to \"%s\"",
-                 rec->preroll_count, rec->preroll_count * 0.0464399, rec->current_title);
-        rec->preroll_count = 0;
-        rec->preroll_head = 0;
+        log_info("[RECORDER] Prepended %lu pre-roll frames (%.2fs) to \"%s\"",
+                 new_track->packets_preroll, new_track->packets_preroll * 0.0464399, new_track->title);
     }
 
+    /* Insert at head of tracks list */
+    new_track->next = rec->tracks;
+    rec->tracks = new_track;
+
     log_info("[RECORDER] Now recording: \"%s\" by \"%s\"%s%s%s (XHDR LOT: %d)",
-             rec->current_title, rec->current_artist,
-             rec->current_album[0] ? " (Album: \"" : "",
-             rec->current_album[0] ? rec->current_album : "",
-             rec->current_album[0] ? "\")" : "",
-             rec->current_xhdr_lot);
+             new_track->title, new_track->artist,
+             new_track->album[0] ? " (Album: \"" : "",
+             new_track->album[0] ? new_track->album : "",
+             new_track->album[0] ? "\")" : "",
+             new_track->xhdr_lot);
 }
 
 /* ------------------------------------------------------------------ */
 /* Public API                                                         */
 
-song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, unsigned int program, double preroll_sec)
+song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, unsigned int program, double preroll_sec, double postroll_sec)
 {
     /* Require ffmpeg for M4A packaging */
     if (system("ffmpeg -version > /dev/null 2>&1") != 0) {
@@ -461,17 +543,24 @@ song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, u
     rec->split_delay_sec = split_delay_sec;
     rec->program = program;
 
-    rec->preroll_sec = preroll_sec;
+    rec->preroll_sec = (preroll_sec < 0.0) ? DEFAULT_PREROLL_SEC : preroll_sec;
     const char *preroll_env = getenv("NRSC5_RECORDER_PREROLL");
     if (preroll_env) {
         rec->preroll_sec = atof(preroll_env);
     }
     if (rec->preroll_sec < 0.0) rec->preroll_sec = 0.0;
 
+    rec->postroll_sec = (postroll_sec < 0.0) ? DEFAULT_POSTROLL_SEC : postroll_sec;
+    const char *postroll_env = getenv("NRSC5_RECORDER_POSTROLL");
+    if (postroll_env) {
+        rec->postroll_sec = atof(postroll_env);
+    }
+    if (rec->postroll_sec < 0.0) rec->postroll_sec = 0.0;
+
     /* ~21.533 frames per second (2048 samples / 44100 Hz per frame) */
     rec->preroll_capacity = (size_t)(rec->preroll_sec * 21.533 + 0.5);
-    if (rec->preroll_capacity > MAX_PREROLL_FRAMES) {
-        rec->preroll_capacity = MAX_PREROLL_FRAMES;
+    if (rec->preroll_capacity > 0) {
+        rec->preroll = calloc(rec->preroll_capacity, sizeof(preroll_frame_t));
     }
     rec->preroll_head = 0;
     rec->preroll_count = 0;
@@ -491,7 +580,7 @@ song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, u
 
     mkdir_p(rec->base_dir);
 
-    /* Bug 2.3: Clean up any dangling temporary or staging files from prior unclean shutdowns */
+    /* Clean up any dangling temporary or staging files from prior unclean shutdowns */
     DIR *d = opendir(rec->base_dir);
     if (d) {
         struct dirent *de;
@@ -507,13 +596,14 @@ song_recorder_t *recorder_create(const char *base_dir, double split_delay_sec, u
 
     rec->remuxer = hdc2aac_remuxer_create();
     if (!rec->remuxer) {
+        if (rec->preroll) free(rec->preroll);
         free(rec);
         return NULL;
     }
 
-    log_info("[RECORDER] Initialized: target folder \"%s\", program %u, min duration %lus, pre-roll %.2fs (%zu frames)",
+    log_info("[RECORDER] Initialized: target folder \"%s\", program %u, min duration %lus, pre-roll %.2fs (%zu frames), post-roll %.2fs",
              rec->base_dir, rec->program, (unsigned long)(rec->min_song_packets * 0.0464399),
-             rec->preroll_sec, rec->preroll_capacity);
+             rec->preroll_sec, rec->preroll_capacity, rec->postroll_sec);
 
     return rec;
 }
@@ -522,19 +612,27 @@ void recorder_destroy(song_recorder_t *rec, int clean_shutdown)
 {
     if (!rec) return;
 
-    if (rec->tmp_fp) {
-        if (clean_shutdown) {
-            finalize_current_song(rec);
-        } else {
-            fclose(rec->tmp_fp);
-            rec->tmp_fp = NULL;
-            unlink(rec->tmp_path);
-            log_info("[RECORDER] Discarded incomplete track on exit");
+    active_track_t *t = rec->tracks;
+    while (t) {
+        active_track_t *next = t->next;
+        if (t->tmp_fp) {
+            if (clean_shutdown) {
+                finalize_track(rec, t);
+            } else {
+                fclose(t->tmp_fp);
+                t->tmp_fp = NULL;
+                unlink(t->tmp_path);
+                log_info("[RECORDER] Discarded incomplete track on exit: \"%s\"", t->title);
+                if (t->art_data) free(t->art_data);
+            }
         }
+        free(t);
+        t = next;
     }
+    rec->tracks = NULL;
 
-    if (rec->current_art_data) {
-        free(rec->current_art_data);
+    if (rec->preroll) {
+        free(rec->preroll);
     }
 
     for (int i = 0; i < LOT_CACHE_SIZE; i++) {
@@ -568,14 +666,33 @@ void recorder_on_hdc(song_recorder_t *rec, unsigned int program, const uint8_t *
     if (aac_len == 0)
         return;
 
-    /* If a song file is currently open, write frame directly to it */
-    if (rec->has_seen_first_transition && rec->tmp_fp) {
-        fwrite(aac_buf, 1, aac_len, rec->tmp_fp);
-        rec->current_packets++;
+    /* Feed frame to all currently active tracks */
+    active_track_t **curr_ptr = &rec->tracks;
+    while (*curr_ptr) {
+        active_track_t *track = *curr_ptr;
+        if (track->tmp_fp) {
+            fwrite(aac_buf, 1, aac_len, track->tmp_fp);
+            if (track->is_postroll) {
+                track->packets_postroll++;
+                if (track->postroll_frames_remaining > 0) {
+                    track->postroll_frames_remaining--;
+                }
+                if (track->postroll_frames_remaining == 0) {
+                    /* Finalize track and unlink from active list */
+                    finalize_track(rec, track);
+                    *curr_ptr = track->next;
+                    free(track);
+                    continue;
+                }
+            } else {
+                track->packets_body++;
+            }
+        }
+        curr_ptr = &(*curr_ptr)->next;
     }
 
     /* Store frame into rolling pre-roll ring buffer */
-    if (rec->preroll_capacity > 0) {
+    if (rec->preroll && rec->preroll_capacity > 0) {
         preroll_frame_t *slot = &rec->preroll[rec->preroll_head];
         memcpy(slot->data, aac_buf, aac_len);
         slot->len = aac_len;
@@ -595,31 +712,33 @@ void recorder_on_id3(song_recorder_t *rec, unsigned int program, const char *tit
     const char *new_artist = artist ? artist : "";
     const char *new_album = album ? album : "";
 
-    /* Ignore identical repeated ID3 tags, but update album / LOT ID if newly provided */
-    if (rec->has_seen_first_transition &&
-        strcmp(rec->current_title, new_title) == 0 &&
-        strcmp(rec->current_artist, new_artist) == 0) {
+    active_track_t *cur = get_primary_track(rec);
 
-        if (rec->current_album[0] == '\0' && new_album[0] != '\0') {
-            strncpy(rec->current_album, new_album, sizeof(rec->current_album) - 1);
-            rec->current_album[sizeof(rec->current_album) - 1] = '\0';
-            log_info("[RECORDER] Updated album for \"%s\": \"%s\"", rec->current_title, rec->current_album);
+    /* Ignore identical repeated ID3 tags, but update album / LOT ID if newly provided */
+    if (rec->has_seen_first_transition && cur &&
+        strcmp(cur->title, new_title) == 0 &&
+        strcmp(cur->artist, new_artist) == 0) {
+
+        if (cur->album[0] == '\0' && new_album[0] != '\0') {
+            strncpy(cur->album, new_album, sizeof(cur->album) - 1);
+            cur->album[sizeof(cur->album) - 1] = '\0';
+            log_info("[RECORDER] Updated album for \"%s\": \"%s\"", cur->title, cur->album);
         }
 
-        if (rec->current_xhdr_lot < 0 && xhdr_lot >= 0) {
-            rec->current_xhdr_lot = xhdr_lot;
+        if (cur->xhdr_lot < 0 && xhdr_lot >= 0) {
+            cur->xhdr_lot = xhdr_lot;
             /* Check if art is already in cache */
-            if (!rec->current_art_data) {
+            if (!cur->art_data) {
                 for (int i = 0; i < LOT_CACHE_SIZE; i++) {
                     if (rec->lot_cache[i].data && (int)rec->lot_cache[i].lot_id == xhdr_lot) {
-                        rec->current_art_data = malloc(rec->lot_cache[i].size);
-                        if (rec->current_art_data) {
-                            memcpy(rec->current_art_data, rec->lot_cache[i].data, rec->lot_cache[i].size);
-                            rec->current_art_size = rec->lot_cache[i].size;
-                            strncpy(rec->current_art_ext, rec->lot_cache[i].ext, sizeof(rec->current_art_ext) - 1);
-                            rec->current_art_ext[sizeof(rec->current_art_ext) - 1] = '\0';
+                        cur->art_data = malloc(rec->lot_cache[i].size);
+                        if (cur->art_data) {
+                            memcpy(cur->art_data, rec->lot_cache[i].data, rec->lot_cache[i].size);
+                            cur->art_size = rec->lot_cache[i].size;
+                            strncpy(cur->art_ext, rec->lot_cache[i].ext, sizeof(cur->art_ext) - 1);
+                            cur->art_ext[sizeof(cur->art_ext) - 1] = '\0';
                             log_info("[RECORDER] Matched cached cover art for \"%s\" (LOT %u, %zu bytes %s)",
-                                     rec->current_title, xhdr_lot, rec->current_art_size, rec->current_art_ext);
+                                     cur->title, xhdr_lot, cur->art_size, cur->art_ext);
                         }
                         break;
                     }
@@ -635,17 +754,10 @@ void recorder_on_id3(song_recorder_t *rec, unsigned int program, const char *tit
         if (rec->record_initial) {
             start_new_song(rec, new_title, new_artist, new_album, xhdr_lot);
         } else {
-            strncpy(rec->current_title, new_title, sizeof(rec->current_title) - 1);
-            strncpy(rec->current_artist, new_artist, sizeof(rec->current_artist) - 1);
-            strncpy(rec->current_album, new_album, sizeof(rec->current_album) - 1);
             log_info("[RECORDER] In-progress track detected: \"%s\" by \"%s\" (discarding partial track until next song)",
-                     rec->current_title, rec->current_artist);
+                     new_title, new_artist);
         }
-    } else if (!rec->tmp_fp) {
-        /* First transition after discarding initial in-progress track */
-        start_new_song(rec, new_title, new_artist, new_album, xhdr_lot);
     } else {
-        finalize_current_song(rec);
         start_new_song(rec, new_title, new_artist, new_album, xhdr_lot);
     }
 }
@@ -680,17 +792,18 @@ void recorder_on_lot(song_recorder_t *rec, unsigned int lot_id, const char *mime
         rec->lot_cache_idx = (rec->lot_cache_idx + 1) % LOT_CACHE_SIZE;
     }
 
-    /* If matching currently recording song, associate immediately */
-    if (rec->tmp_fp && (int)lot_id == rec->current_xhdr_lot) {
-        free(rec->current_art_data);
-        rec->current_art_data = malloc(size);
-        if (rec->current_art_data) {
-            memcpy(rec->current_art_data, data, size);
-            rec->current_art_size = size;
-            strncpy(rec->current_art_ext, ext, sizeof(rec->current_art_ext) - 1);
-            rec->current_art_ext[sizeof(rec->current_art_ext) - 1] = '\0';
-            log_info("[RECORDER] Received cover art for \"%s\" (LOT %u, %zu bytes %s)",
-                     rec->current_title, lot_id, size, ext);
+    /* If matching any active track, associate immediately */
+    for (active_track_t *t = rec->tracks; t; t = t->next) {
+        if (t->tmp_fp && (int)lot_id == t->xhdr_lot && !t->art_data) {
+            t->art_data = malloc(size);
+            if (t->art_data) {
+                memcpy(t->art_data, data, size);
+                t->art_size = size;
+                strncpy(t->art_ext, ext, sizeof(t->art_ext) - 1);
+                t->art_ext[sizeof(t->art_ext) - 1] = '\0';
+                log_info("[RECORDER] Received cover art for \"%s\" (LOT %u, %zu bytes %s)",
+                         t->title, lot_id, size, ext);
+            }
         }
     }
 }

@@ -1,0 +1,22 @@
+[Unit]
+Description=NRSC5 HD Radio Audio Stream Recorder
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=benjamin
+WorkingDirectory=/home/benjamin/nrsc5
+Environment=NRSC5_FREQ=98.5
+Environment=NRSC5_PROGRAM=1
+# Clean quiet execution (-q), streams directly into systemd journal
+ExecStart=/bin/sh -c 'exec /home/benjamin/nrsc5/build/src/nrsc5 -q --record-songs /home/benjamin/nrsc5/recordings "$NRSC5_FREQ" "$NRSC5_PROGRAM"'
+Restart=always
+# 30-second backoff gives the RTL-SDR dongle time to cool down and avoids log spam if unplugged
+RestartSec=30
+# Standardize logging directly into journald (eliminating unbounded nohup.out)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

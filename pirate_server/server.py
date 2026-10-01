@@ -333,6 +333,12 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 with open(full_path, "rb") as f:
                     shutil.copyfileobj(f, self.wfile)
                 os.unlink(full_path)
+                txt_path = os.path.splitext(full_path)[0] + ".txt"
+                if os.path.isfile(txt_path):
+                    try:
+                        os.unlink(txt_path)
+                    except OSError:
+                        pass
                 print(f"[PIRATE] Plundered & deleted: {filename}")
 
                 # Clean up empty parent artist directory if all songs for this artist were plundered (Bug 3.4)
