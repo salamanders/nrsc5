@@ -137,15 +137,17 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
         self.do_GET()
 
     def has_plundered(self):
-        # 1. Check browser cookie
-        if "plundered=1" in self.headers.get("Cookie", ""):
-            return True
-        # 2. Check in-memory IP cooldown (10 minutes = 600s)
-        client_ip = self.client_address[0]
-        last_time = PLUNDER_COOLDOWN.get(client_ip, 0)
-        if (time.time() - last_time) < 600:
-            return True
+        # Plunder cooldown disabled: avoid locking visitors out or breaking re-tests
         return False
+        # 1. Check browser cookie
+        # if "plundered=1" in self.headers.get("Cookie", ""):
+        #     return True
+        # 2. Check in-memory IP cooldown (10 minutes = 600s)
+        # client_ip = self.client_address[0]
+        # last_time = PLUNDER_COOLDOWN.get(client_ip, 0)
+        # if (time.time() - last_time) < 600:
+        #     return True
+        # return False
 
     def is_cna_client(self):
         """Detects if client is an iOS Captive Network Assistant (sandboxed popup)."""
@@ -241,18 +243,18 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
 
         # 3. Farewell page
         if path == "/farewell":
-            # Softly deauthenticate this station 15 seconds after reaching farewell
-            schedule_farewell_deauth(self.client_address[0])
+            # Softly deauthenticate disabled: keep visitor connected
+            # schedule_farewell_deauth(self.client_address[0])
             html_page = self.render_template("farewell.html")
             self.send_html(html_page)
             return
 
-        # 4. If already claimed booty, force to farewell screen
-        if self.has_plundered():
-            self.send_response(302)
-            self.send_header("Location", "/farewell")
-            self.end_headers()
-            return
+        # 4. If already claimed booty, force to farewell screen (disabled)
+        # if self.has_plundered():
+        #     self.send_response(302)
+        #     self.send_header("Location", "/farewell")
+        #     self.end_headers()
+        #     return
 
         # 5. Captive assistant detection: if an Apple CNA popup hits root, show portal handoff
         if self.is_cna_client() and path not in ["/download"]:
@@ -314,14 +316,16 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             filename = os.path.basename(full_path)
-            client_ip = self.client_address[0]
-            PLUNDER_COOLDOWN[client_ip] = time.time()
+            # IP cooldown disabled
+            # client_ip = self.client_address[0]
+            # PLUNDER_COOLDOWN[client_ip] = time.time()
 
             self.send_response(200)
             self.send_header("Content-Type", "audio/mp4")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(file_size))
-            self.send_header("Set-Cookie", "plundered=1; Path=/; Max-Age=600")
+            # Cookie disabled to allow multiple testing downloads without lockout
+            # self.send_header("Set-Cookie", "plundered=1; Path=/; Max-Age=600")
             self.end_headers()
 
             # Stream the file to client, then delete from disk

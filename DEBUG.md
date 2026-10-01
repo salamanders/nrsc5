@@ -671,4 +671,77 @@ getcap $(readlink -f $(which python3))
   3. Leaving port 443 open with a self-signed certificate creates an active liability for Maker Faire attendees: any visitor with an aggressive HTTPS-Only browser extension might probe 443 and encounter a scary certificate interstitial, rather than falling back smoothly to Port 80.
 * **Action:** Reverted `server.py` to single-port HTTP (Port 80 only), deleted `cert.pem` and `key.pem`, and restarted `pirate-server.service`.
 
+---
 
+## 12. Post-Maker-Faire Diagnostic & Stability Overhaul (Session 2026-09-27)
+
+### 12.1 Background & Problem Statement
+* **Event:** Maker Faire live prop deployment (Saturday, September 26, 2026).
+* **Observed Symptoms:**
+  - The prop functioned successfully in the morning (at least two visitors/devices connected and plundered tracks).
+  - Later in the afternoon and evening (between 4:00 PM and 9:00 PM PST), mobile visitors could connect to the Wi-Fi hotspot (Step 1), but the Pi failed to serve the web page (Step 2: `http://10.42.0.1/`).
+  - Multiple device reboots did not restore functionality.
+
+### 12.2 Forensic Findings: Why Were There No Logs from the Incident?
+1. **Volatile In-Memory Systemd Journal:**
+   - Default configuration files (`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` and `/etc/systemd/journald.conf.d/00-pirate.conf`) forced `Storage=volatile`.
+   - `systemd-journald` wrote logs strictly to a volatile `tmpfs` RAM disk at `/run/log/journal/`.
+   - When the Pi was rebooted multiple times during troubleshooting and powered off overnight, all systemd service logs, access logs, and kernel messages were destroyed on each power cycle.
+2. **Offline Clock Offset:**
+   - Operating offline without an active WAN/Ethernet connection meant `systemd-timesyncd` could not contact NTP pool servers.
+   - The Pi's clock ran at the fallback timestamp (`September 20, 2026 19:30 PDT`) throughout Saturday's operation, only jumping to September 27 when plugged into Ethernet at home on Sunday morning (`09:04:31 PDT`).
+3. **Physical Storage Proof (`dnsmasq` Leases):**
+   - The DHCP lease file (`/var/lib/NetworkManager/dnsmasq-wlan0.leases`) survived on the root filesystem.
+   - It confirmed that devices (including `motorola-edge-2025` at `10.42.0.158` and `Benjamin-s-Pixel-Corp` at `10.42.0.34`) successfully associated with Wi-Fi and received DHCP leases.
+
+### 12.3 Stability Overhaul: Changes Implemented & Rationale
+
+#### Change 1: Expanded DHCP Lease Time to 12 Hours
+* **File Modified:** `/etc/NetworkManager/dnsmasq-shared.d/pirate.conf`
+* **Configuration:**
+  ```conf
+  dhcp-range=10.42.0.10,10.42.0.254,255.255.255.0,12h
+  ```
+* **Previous State:** `dhcp-range=10.42.0.2,10.42.0.254,255.255.255.0,2m` (2-minute lease).
+* **Rationale:**
+  - A 2-minute lease forced mobile clients to initiate DHCP renewal every 60 seconds (T1 renewal).
+  - Modern smartphones (both iOS and Android) frequently drop short-lease connections when the screen turns off or background power management activates on networks without internet.
+  - Expanding the lease to 12 hours ensures connected devices hold a stable IP address throughout the entire event day without renegotiation.
+
+#### Change 2: Persistent System Logs Capped at 1GB
+* **Files Modified:**
+  - Removed volatile drop-in `/etc/systemd/journald.conf.d/00-pirate.conf`.
+  - Created high-priority override `/etc/systemd/journald.conf.d/99-persistent.conf`:
+    ```ini
+    [Journal]
+    Storage=persistent
+    Compress=yes
+    SystemMaxUse=1G
+    RuntimeMaxUse=100M
+    ```
+  - Initialized persistent directory `/var/log/journal/fcec299c48514c43a1d9204a9f401b95/`.
+* **Rationale:**
+  - Overrides the Raspberry Pi OS default volatile rule (`40-rpi-volatile-storage.conf`).
+  - Ensures all service journals, web server access logs, and kernel dmesg records survive reboots and power-downs for reliable post-event debugging.
+  - Strictly caps disk utilization at 1 GB to safeguard SD card capacity (over 21 GB remains free on root).
+
+#### Change 3: Disabled Plunder Cooldown, Cookie Tracking, and Station Deauth
+* **File Modified:** `pirate_server/server.py`
+* **Changes:**
+  1. `has_plundered()` now unconditionally returns `False`.
+  2. Commented out `PLUNDER_COOLDOWN` in-memory tracking and `Set-Cookie: plundered=1` in `/download`.
+  3. Commented out `schedule_farewell_deauth()` in `/farewell`.
+  4. Commented out the forced 302 redirect from `/` to `/farewell`.
+* **Rationale:**
+  - The cooldown mechanism added fragile state (browser cookies and IP tracking) that created false-positive lockouts. If a visitor refreshed their browser or a device reconnected, they were trapped in redirects to `/farewell`.
+  - The 15-second delayed deauthentication (`iw dev wlan0 station del <mac>`) actively severed client Wi-Fi connections, confusing visitors and making testing difficult.
+  - Disabling this logic eliminates a major point of failure, enabling smooth, uninterrupted browsing and repeatable testing.
+
+### 12.4 Risk Analysis of the New Configuration
+
+| Risk Area | Analysis & Reality | Mitigating Factor |
+| :--- | :--- | :--- |
+| **DHCP IP Pool Exhaustion** | Pool spans `10.42.0.10`–`10.42.0.254` (**245 unique IPs**). A daily volume of 30–80 attendees utilizes <35% of the pool. | Hotspot is WPA2-password-protected (`treasure`); passive foot traffic cannot consume leases. (If attendance exceeds 200/day, lease can be dialed to `4h`). |
+| **Library Depletion (Multiple Plunders)** | Without cooldowns, a visitor can download multiple songs in one session. Since tracks are deleted upon download (`os.unlink`), the catalog drains faster. | Acceptable trade-off: prevents attendee lockout bugs and enables friction-free testing. |
+| **Wi-Fi Hardware Association Limit** | Broadcom BCM43455 chip has a firmware ceiling of ~10 simultaneous associations. | The background `run_station_reaper` remains active, pruning stations that are idle for >4 minutes while preserving their 12h DHCP lease upon reconnection. |
+| **SD Card Flash Wear** | Writing persistent logs to flash storage. | Journal is strictly bounded to 1 GB with compression. Standard idle logging volume is under 500 KB/day, having zero measurable impact on modern SD card endurance. |
