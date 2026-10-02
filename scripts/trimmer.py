@@ -340,11 +340,74 @@ def find_song_groups(base_dir):
     return groups
 
 
+def migrate_raw_files(base_dir, dry_run=False):
+    """
+    Renames any legacy raw broadcast captures that lack a _### suffix
+    to have a suffix starting at _100.m4a (and _100.txt).
+    Preserves any file that is already verified trimmed.
+    """
+    if not os.path.isdir(base_dir):
+        print(f"[MIGRATE] Directory not found: {base_dir}")
+        return 0
+
+    migrated_count = 0
+    preserved_count = 0
+
+    for root, dirs, files in os.walk(base_dir):
+        for f in sorted(files):
+            if not f.lower().endswith(".m4a") or f.startswith("."):
+                continue
+
+            full_path = os.path.join(root, f)
+            base_name, ext = os.path.splitext(f)
+
+            # If it already has a 3-digit suffix (e.g. _001, _002), it's already identified as raw
+            if re.search(r"_\d{3}$", base_name):
+                continue
+
+            # It lacks a suffix. Check if it's already trimmed!
+            txt_path = os.path.join(root, base_name + ".txt")
+            txt_data = parse_companion_txt(txt_path)
+            comment = get_file_comment(full_path)
+
+            if txt_data.get("trim_status") in ("trimmed", "already_trimmed") or "trimmed=true" in comment:
+                print(f"[MIGRATE] Preserving verified trimmed master: {os.path.relpath(full_path, base_dir)}")
+                preserved_count += 1
+                continue
+
+            # This is an existing raw file lacking a suffix! Find available _100+ slot
+            target_idx = 100
+            new_m4a = ""
+            while True:
+                candidate = os.path.join(root, f"{base_name}_{target_idx:03d}.m4a")
+                if not os.path.exists(candidate):
+                    new_m4a = candidate
+                    break
+                target_idx += 1
+
+            new_txt = os.path.join(root, f"{base_name}_{target_idx:03d}.txt")
+            rel_old = os.path.relpath(full_path, base_dir)
+            rel_new = os.path.relpath(new_m4a, base_dir)
+
+            if dry_run:
+                print(f"[MIGRATE DRY-RUN] Would rename: {rel_old} -> {os.path.basename(new_m4a)}")
+            else:
+                os.rename(full_path, new_m4a)
+                if os.path.exists(txt_path):
+                    os.rename(txt_path, new_txt)
+                print(f"[MIGRATE] Renamed: {rel_old} -> {os.path.basename(new_m4a)}")
+
+            migrated_count += 1
+
+    print(f"\n[MIGRATE] Complete. Renamed {migrated_count} raw files to _100+ format. Preserved {preserved_count} trimmed masters.")
+    return migrated_count
+
+
 def execute_lossless_trim(input_path, trim_start, trim_end, out_path=None, trim_comment=None):
     if out_path is None:
         out_path = input_path
 
-    tmp_out = input_path + ".trimmed.tmp.m4a"
+    tmp_out = out_path + ".trimmed.tmp.m4a"
     cmd = [
         "ffmpeg", "-y", "-v", "error",
         "-ss", f"{trim_start:.3f}",
@@ -463,12 +526,18 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Analyze and print boundary decisions without modifying files")
     parser.add_argument("--apply", action="store_true", help="Apply destructive lossless trimming on high-confidence songs")
     parser.add_argument("--dedup", action="store_true", help="Delete duplicate takes after successful high-confidence trimming")
+    parser.add_argument("--migrate", action="store_true", help="Rename legacy untrimmed raw files to _100+ format")
     parser.add_argument("--analyze", help="Analyze a specific song file or pattern")
     args = parser.parse_args()
 
-    if not args.dry_run and not args.apply and not args.analyze:
+    if not args.dry_run and not args.apply and not args.analyze and not args.migrate:
         parser.print_help()
         sys.exit(0)
+
+    if args.migrate:
+        migrate_raw_files(args.dir, dry_run=args.dry_run)
+        if not args.apply and not args.analyze:
+            sys.exit(0)
 
     groups = find_song_groups(args.dir)
     total_groups = len(groups)
@@ -495,6 +564,19 @@ def main():
         if status == "already_trimmed":
             already_trimmed_count += 1
             print(f"⏭️  [TRIMMED]   \"{title}\" by {artist}: already trimmed ({orig_dur:.1f}s)")
+            if args.apply and args.dedup and len(paths) > 1:
+                for dup in paths:
+                    if dup == res["primary_file"]:
+                        continue
+                    try:
+                        if os.path.exists(dup):
+                            os.unlink(dup)
+                        dup_txt = os.path.splitext(dup)[0] + ".txt"
+                        if os.path.isfile(dup_txt):
+                            os.unlink(dup_txt)
+                        print(f"    -> Cleaned post-trim duplicate take: {os.path.basename(dup)}")
+                    except OSError:
+                        pass
             continue
 
         is_high = conf >= CONFIDENCE_THRESHOLD
@@ -509,41 +591,32 @@ def main():
               f"conf: {conf:.2f}, via {method})")
 
         if args.apply:
-            txt_path = os.path.splitext(res["primary_file"])[0] + ".txt"
-            update_companion_txt(txt_path, res)
-
             if is_high:
+                canonical_m4a = os.path.join(os.path.dirname(res["primary_file"]), f"{title}.m4a")
+                canonical_txt = os.path.join(os.path.dirname(res["primary_file"]), f"{title}.txt")
                 comment_tag = f"trimmed=true;start={t_start:.3f};end={t_end:.3f};method={method};conf={conf:.2f}"
-                ok = execute_lossless_trim(res["primary_file"], t_start, t_end, trim_comment=comment_tag)
+                ok = execute_lossless_trim(res["primary_file"], t_start, t_end, out_path=canonical_m4a, trim_comment=comment_tag)
                 if ok:
                     trimmed_count += 1
-                    print(f"    -> Losslessly trimmed {os.path.basename(res['primary_file'])}")
-                    final_path = res["primary_file"]
-                    final_txt = txt_path
+                    update_companion_txt(canonical_txt, res)
+                    print(f"    -> Losslessly trimmed to {os.path.basename(canonical_m4a)}")
 
-                    if args.dedup and len(paths) > 1:
+                    if args.dedup:
                         for dup in paths:
-                            if dup == res["primary_file"]:
+                            if dup == canonical_m4a:
                                 continue
                             try:
                                 if os.path.exists(dup):
                                     os.unlink(dup)
                                 dup_txt = os.path.splitext(dup)[0] + ".txt"
-                                if os.path.isfile(dup_txt):
+                                if os.path.exists(dup_txt):
                                     os.unlink(dup_txt)
-                                print(f"    -> Cleaned duplicate take: {os.path.basename(dup)}")
+                                print(f"    -> Cleaned raw take: {os.path.basename(dup)}")
                             except OSError:
                                 pass
-
-                        canonical_m4a = os.path.join(os.path.dirname(final_path), f"{title}.m4a")
-                        canonical_txt = os.path.join(os.path.dirname(final_path), f"{title}.txt")
-                        if final_path != canonical_m4a and not os.path.exists(canonical_m4a):
-                            os.replace(final_path, canonical_m4a)
-                            final_path = canonical_m4a
-                            if os.path.exists(final_txt):
-                                os.replace(final_txt, canonical_txt)
-                                final_txt = canonical_txt
-                            print(f"    -> Promoted to canonical name: {os.path.basename(canonical_m4a)}")
+            else:
+                txt_path = os.path.splitext(res["primary_file"])[0] + ".txt"
+                update_companion_txt(txt_path, res)
 
     print("\n" + "=" * 60)
     print(f"Summary: {total_groups} songs inspected.")

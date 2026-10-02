@@ -7,6 +7,7 @@ import mimetypes
 import time
 import threading
 import subprocess
+import re
 
 PORT = int(os.environ.get("PIRATE_PORT", 80))
 HOST = os.environ.get("PIRATE_HOST", "10.42.0.1")
@@ -98,11 +99,13 @@ def run_station_reaper():
             pass
 
 def scan_songs():
-    """Scans the recordings directory and returns a sorted list of valid songs (> 1 KB)."""
-    songs = []
+    """Scans the recordings directory and returns a sorted list of unique songs (> 1 KB).
+    Prioritizes trimmed master tracks over raw broadcast takes.
+    """
     if not os.path.isdir(RECORDINGS_DIR):
-        return songs
+        return []
 
+    grouped = {}
     for root, dirs, files in os.walk(RECORDINGS_DIR):
         for f in files:
             if f.lower().endswith(".m4a") and not f.startswith("."):
@@ -116,16 +119,34 @@ def scan_songs():
                 rel_path = os.path.relpath(full_path, RECORDINGS_DIR)
                 parts = rel_path.split(os.sep)
                 artist = parts[0] if len(parts) >= 2 else "Unknown"
-                title = os.path.splitext(parts[-1])[0]
+                raw_title = os.path.splitext(parts[-1])[0]
+                clean_title = re.sub(r"_\d{3}$", "", raw_title)
+                is_trimmed = (raw_title == clean_title)
 
-                songs.append({
+                key = (artist, clean_title)
+                if key not in grouped:
+                    grouped[key] = []
+
+                grouped[key].append({
                     "full_path": full_path,
                     "rel_path": rel_path.replace(os.sep, "/"),
                     "artist": artist,
-                    "title": title,
+                    "title": clean_title,
                     "display_artist": artist.replace("_", " "),
-                    "display_title": title.replace("_", " ")
+                    "display_title": clean_title.replace("_", " "),
+                    "is_trimmed": is_trimmed,
+                    "mtime": os.path.getmtime(full_path)
                 })
+
+    songs = []
+    for key, tracks in grouped.items():
+        # Prefer trimmed track if available; otherwise pick the most recent raw take
+        trimmed = [t for t in tracks if t["is_trimmed"]]
+        if trimmed:
+            songs.append(trimmed[0])
+        else:
+            tracks.sort(key=lambda t: t["mtime"], reverse=True)
+            songs.append(tracks[0])
 
     songs.sort(key=lambda s: (s["display_artist"].lower(), s["display_title"].lower()))
     return songs

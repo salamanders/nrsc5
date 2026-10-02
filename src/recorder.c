@@ -156,19 +156,17 @@ static void sanitize_filename(char *dst, const char *src, size_t maxlen)
 }
 
 /* ------------------------------------------------------------------ */
-/* Collision Resolution: [song].m4a -> [song]_001.m4a                 */
+/* Raw Broadcast Destination Path: [song]_001.m4a -> [song]_002.m4a    */
+/* (The unsuffixed [song].m4a is reserved for trimmed master tracks)  */
 
 static void resolve_destination_paths(char *out_path, size_t maxlen,
                                       const char *dir, const char *title)
 {
     int i;
 
-    snprintf(out_path, maxlen, "%s/%s.m4a", dir, title);
-
-    if (access(out_path, F_OK) != 0) {
-        return;
-    }
-
+    /* Raw broadcast captures always start at _001.m4a.
+     * The plain unsuffixed [title].m4a name is reserved exclusively for
+     * the finalized, high-confidence trimmed master track. */
     for (i = 1; i <= 999; i++) {
         snprintf(out_path, maxlen, "%s/%s_%03d.m4a", dir, title, i);
         if (access(out_path, F_OK) != 0) {
