@@ -8,8 +8,8 @@ This program receives NRSC-5 digital radio stations using an RTL-SDR dongle, or 
 To continuously record songs into tagged `.m4a` files with embedded album art:
 
 ```bash
-# Tune to frequency and program (e.g. 107.1 MHz, program 0) and record into ./recordings
-nrsc5 --record-songs ./recordings 98.5 1
+# Tune to frequency and program (e.g. 107.1 MHz, program 0) and record into ./recordings/raw
+nrsc5 --record-songs ./recordings/raw 98.5 1
 
 # Optional flags:
 #   --preroll <seconds>      (pre-roll buffer to preserve song intro; default: 2.5s)

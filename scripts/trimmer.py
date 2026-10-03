@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-trimmer.py - Intelligent Song Boundary Trimmer for NRSC5 Broadcast Recordings
+trimmer.py - Jukebox Builder for NRSC5 Broadcast Recordings
 
-Detects exact song boundaries and losslessly trims recordings using:
-1. Multi-Capture Cross-Correlation Divergence (Tier 1 - High Confidence >= 0.85)
-   Aligns 2+ airings of the same song with sample accuracy via FFT cross-correlation,
-   then detects the exact divergence cliff where non-song audio begins/ends.
-2. Targeted Silence & Transient Onset Detection (Tier 2 - Single-Capture Fallback)
-   Scans the known 15s pre/post-roll windows for inter-track silence gaps.
-
-Trims losslessly (-c copy) strictly when confidence >= 0.85. Low-confidence tracks
-are preserved with raw overlap intact so future airings can resolve boundaries.
+Enforces the strict "2-Airing Rule" to build a curated, sample-accurate Jukebox:
+1. Scans raw broadcast recordings in RECORDINGS_DIR (captured with 15s pre/post padding).
+2. For any song not yet in JUKEBOX_DIR:
+   - If < 2 takes exist: Waits for a 2nd airing (no guessing with silence detection).
+   - If 2+ takes exist: Aligns candidate pairs using FFT cross-correlation to find the exact
+     sample-accurate divergence cliff (where ads/DJ banter end and studio music begins/ends).
+   - If correlation confidence >= threshold (default 0.85): Losslessly extracts (-c copy)
+     the pristine track into JUKEBOX_DIR/<Artist>/<Title>.m4a with companion .txt metadata.
+3. Completely non-destructive: Never modifies or deletes raw captures.
+4. Skips tracks already verified in JUKEBOX_DIR.
 """
 
 import os
@@ -18,11 +19,11 @@ import sys
 import argparse
 import subprocess
 import re
-import shutil
 import numpy as np
 from scipy import signal
 
-RECORDINGS_DIR = "/home/benjamin/nrsc5/recordings"
+RECORDINGS_DIR = "/home/benjamin/nrsc5/recordings/raw"
+JUKEBOX_DIR = "/home/benjamin/nrsc5/jukebox"
 SAMPLE_RATE = 11025  # Low-res PCM mono for fast, lightweight FFT correlation
 WINDOW_MS = 60       # Window size for correlation sliding search
 STEP_MS = 20         # Step size for sliding search
@@ -107,86 +108,17 @@ def extract_pcm(file_path, sample_rate=SAMPLE_RATE, max_duration=None):
     return samples
 
 
-def find_silence_boundaries(file_path, offset_front=15.0, offset_end=15.0, duration=None):
-    if duration is None:
-        duration = get_audio_duration(file_path)
-    if duration <= 0:
-        return None
-
-    cmd = [
-        "ffmpeg", "-hide_banner",
-        "-i", file_path,
-        "-af", "silencedetect=noise=-36dB:d=0.2",
-        "-f", "null", "-"
-    ]
-    code, _, stderr = run_cmd(cmd)
-
-    silences = []
-    # Parse lines like:
-    # [silencedetect @ ...] silence_start: 13.318
-    # [silencedetect @ ...] silence_end: 13.853 | silence_duration: 0.535
-    cur_start = None
-    for line in stderr.splitlines():
-        start_match = re.search(r"silence_start:\s*([\d\.]+)", line)
-        if start_match:
-            cur_start = float(start_match.group(1))
-        end_match = re.search(r"silence_end:\s*([\d\.]+)\s*\|\s*silence_duration:\s*([\d\.]+)", line)
-        if end_match and cur_start is not None:
-            silences.append({
-                "start": cur_start,
-                "end": float(end_match.group(1)),
-                "duration": float(end_match.group(2))
-            })
-            cur_start = None
-
-    intro_window_max = offset_front + 4.0
-    best_intro = None
-    for s in silences:
-        if s["end"] <= intro_window_max and s["end"] >= 0.5:
-            if best_intro is None or s["duration"] > best_intro["duration"]:
-                best_intro = s
-
-    outro_window_min = max(0.0, duration - offset_end - 6.0)
-    best_outro = None
-    for s in silences:
-        if s["start"] >= outro_window_min:
-            if best_outro is None or s["duration"] > best_outro["duration"]:
-                best_outro = s
-
-    trim_start = best_intro["end"] if best_intro else offset_front
-    trim_end = best_outro["start"] if best_outro else (duration - offset_end)
-
-    confidence = 0.50
-    if best_intro and best_outro:
-        confidence = 0.88 if (best_intro["duration"] >= 0.2 and best_outro["duration"] >= 0.2) else 0.78
-    elif best_intro or best_outro:
-        confidence = 0.70
-
-    return {
-        "method": "silence_detection",
-        "trim_start": trim_start,
-        "trim_end": trim_end,
-        "confidence": confidence,
-        "intro_silence": best_intro,
-        "outro_silence": best_outro,
-        "duration": duration
-    }
-
-
 def compute_energy_envelope(pcm, sr=SAMPLE_RATE, fps=100):
     """Computes a smoothed root-mean-square (RMS) energy envelope at `fps` frames per second."""
     hop = int(sr / fps)
     win = int(sr * 0.05)  # 50ms smoothing window
     if len(pcm) < win:
-        return np.array([], dtype=np.float32)
+        return np.array([], dtype=np.float32), np.array([], dtype=np.float32)
 
-    # Squared magnitude
     sq = pcm ** 2
-    # Moving average
     kernel = np.ones(win, dtype=np.float32) / win
     smoothed = np.convolve(sq, kernel, mode="same")
     rms = np.sqrt(np.maximum(0.0, smoothed))[::hop]
-    # Subtract mean and normalize
     rms_norm = rms - np.mean(rms)
     norm = np.linalg.norm(rms_norm)
     if norm > 0:
@@ -231,7 +163,6 @@ def multi_capture_alignment(file1, file2, verbose=False):
     seg_norm = np.linalg.norm(matched_seg)
     norm_corr = float(peak_val / seg_norm) if seg_norm > 0 else 0.0
 
-    # Offset in seconds: time in file2 minus time in file1
     offset_frames = peak_idx - anchor_start
     offset_sec = offset_frames / float(fps)
 
@@ -249,19 +180,10 @@ def multi_capture_alignment(file1, file2, verbose=False):
 
     if verbose:
         print(f"    [ALIGN DEBUG] Envelope peak_val={peak_val:.2f}, norm_corr={norm_corr:.4f}, offset={offset_sec:.3f}s")
-        print("    [ALIGN DEBUG] Timeline probe of correlation across song:")
-        probe_pts = []
-        for s in range(5, int(dur1) - 5, 15):
-            f = int(s * fps)
-            f2 = f + offset_frames
-            if f2 >= 0 and f2 + eval_win <= len(raw_env2) and f + eval_win <= len(raw_env1):
-                rc = local_correlation(raw_env1[f:f+eval_win], raw_env2[f2:f2+eval_win])
-                probe_pts.append(f"{s}s:{rc:.2f}")
-        print("      " + " ".join(probe_pts))
 
     if norm_corr < 0.65:
         if verbose:
-            print(f"    [ALIGN DEBUG] norm_corr {norm_corr:.4f} < 0.65, falling back")
+            print(f"    [ALIGN DEBUG] norm_corr {norm_corr:.4f} < 0.65, insufficient correlation")
         return None
 
     # Step 2: Search for intro boundary in [0s, 25s] window
@@ -283,7 +205,6 @@ def multi_capture_alignment(file1, file2, verbose=False):
         if f2 >= 0 and (f2 + eval_win) <= len(raw_env2):
             r = local_correlation(raw_env1[f : f + eval_win], raw_env2[f2 : f2 + eval_win])
             if r < 0.40:
-                # Confirm with next window
                 f_next = f + eval_win
                 f2_next = f_next + offset_frames
                 if f2_next + eval_win <= len(raw_env2):
@@ -298,10 +219,12 @@ def multi_capture_alignment(file1, file2, verbose=False):
         confidence = 0.40
 
     if verbose:
-        print(f"    [ALIGN DEBUG] Targeted divergence: start={trim_start:.2f}s, end={trim_end:.2f}s, conf={confidence:.2f}")
+        print(f"    [ALIGN DEBUG] Divergence points: start={trim_start:.2f}s, end={trim_end:.2f}s, conf={confidence:.2f}")
 
     return {
         "method": "cross_correlation_divergence",
+        "primary_file": file1,
+        "compared_file": file2,
         "trim_start": trim_start,
         "trim_end": trim_end,
         "confidence": confidence,
@@ -311,102 +234,41 @@ def multi_capture_alignment(file1, file2, verbose=False):
     }
 
 
-def find_song_groups(base_dir):
-    """Finds all artists and groups songs by title."""
+def find_raw_song_groups(base_dir):
+    """Finds all raw takes in base_dir grouped by (artist, clean_title)."""
     groups = {}
     if not os.path.isdir(base_dir):
         return groups
 
     for root, dirs, files in os.walk(base_dir):
-        for f in files:
+        for f in sorted(files):
             if f.lower().endswith(".m4a") and not f.startswith("."):
                 full_path = os.path.join(root, f)
+                try:
+                    if os.path.getsize(full_path) <= 1024:
+                        continue
+                except OSError:
+                    continue
+
                 rel_path = os.path.relpath(full_path, base_dir)
                 parts = rel_path.split(os.sep)
                 artist = parts[0] if len(parts) >= 2 else "Unknown"
 
-                # Normalize title by stripping trailing sequence suffixes like _001, _002
-                raw_name = os.path.splitext(f)[0]
-                norm_title = re.sub(r"_\d{3}$", "", raw_name)
-                key = (artist, norm_title)
+                raw_name = os.path.splitext(parts[-1])[0]
+                clean_title = re.sub(r"_\d{3}$", "", raw_name)
+                key = (artist, clean_title)
                 if key not in groups:
                     groups[key] = []
                 groups[key].append(full_path)
 
-    # Sort each group so takes with companion .txt files and canonical names come first
     for key in groups:
-        groups[key].sort(key=lambda p: (not os.path.isfile(os.path.splitext(p)[0] + ".txt"), len(os.path.basename(p)), p))
+        groups[key].sort()
 
     return groups
 
 
-def migrate_raw_files(base_dir, dry_run=False):
-    """
-    Renames any legacy raw broadcast captures that lack a _### suffix
-    to have a suffix starting at _100.m4a (and _100.txt).
-    Preserves any file that is already verified trimmed.
-    """
-    if not os.path.isdir(base_dir):
-        print(f"[MIGRATE] Directory not found: {base_dir}")
-        return 0
-
-    migrated_count = 0
-    preserved_count = 0
-
-    for root, dirs, files in os.walk(base_dir):
-        for f in sorted(files):
-            if not f.lower().endswith(".m4a") or f.startswith("."):
-                continue
-
-            full_path = os.path.join(root, f)
-            base_name, ext = os.path.splitext(f)
-
-            # If it already has a 3-digit suffix (e.g. _001, _002), it's already identified as raw
-            if re.search(r"_\d{3}$", base_name):
-                continue
-
-            # It lacks a suffix. Check if it's already trimmed!
-            txt_path = os.path.join(root, base_name + ".txt")
-            txt_data = parse_companion_txt(txt_path)
-            comment = get_file_comment(full_path)
-
-            if txt_data.get("trim_status") in ("trimmed", "already_trimmed") or "trimmed=true" in comment:
-                print(f"[MIGRATE] Preserving verified trimmed master: {os.path.relpath(full_path, base_dir)}")
-                preserved_count += 1
-                continue
-
-            # This is an existing raw file lacking a suffix! Find available _100+ slot
-            target_idx = 100
-            new_m4a = ""
-            while True:
-                candidate = os.path.join(root, f"{base_name}_{target_idx:03d}.m4a")
-                if not os.path.exists(candidate):
-                    new_m4a = candidate
-                    break
-                target_idx += 1
-
-            new_txt = os.path.join(root, f"{base_name}_{target_idx:03d}.txt")
-            rel_old = os.path.relpath(full_path, base_dir)
-            rel_new = os.path.relpath(new_m4a, base_dir)
-
-            if dry_run:
-                print(f"[MIGRATE DRY-RUN] Would rename: {rel_old} -> {os.path.basename(new_m4a)}")
-            else:
-                os.rename(full_path, new_m4a)
-                if os.path.exists(txt_path):
-                    os.rename(txt_path, new_txt)
-                print(f"[MIGRATE] Renamed: {rel_old} -> {os.path.basename(new_m4a)}")
-
-            migrated_count += 1
-
-    print(f"\n[MIGRATE] Complete. Renamed {migrated_count} raw files to _100+ format. Preserved {preserved_count} trimmed masters.")
-    return migrated_count
-
-
-def execute_lossless_trim(input_path, trim_start, trim_end, out_path=None, trim_comment=None):
-    if out_path is None:
-        out_path = input_path
-
+def execute_lossless_trim(input_path, trim_start, trim_end, out_path, trim_comment=None):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     tmp_out = out_path + ".trimmed.tmp.m4a"
     cmd = [
         "ffmpeg", "-y", "-v", "error",
@@ -420,212 +282,193 @@ def execute_lossless_trim(input_path, trim_start, trim_end, out_path=None, trim_
         cmd.extend(["-metadata", f"comment={trim_comment}"])
     cmd.append(tmp_out)
 
-    code, _, err = run_cmd(cmd)
+    code, _, _ = run_cmd(cmd)
     if code != 0 or not os.path.isfile(tmp_out) or os.path.getsize(tmp_out) <= 1024:
         if os.path.isfile(tmp_out):
-            os.unlink(tmp_out)
+            try:
+                os.unlink(tmp_out)
+            except OSError:
+                pass
         return False
 
     os.replace(tmp_out, out_path)
     return True
 
 
-def update_companion_txt(txt_path, trim_info):
-    lines = []
-    if os.path.isfile(txt_path):
-        with open(txt_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if not any(line.startswith(prefix) for prefix in [
-                    "trim_status:", "trim_start_sec:", "trim_end_sec:",
-                    "trimmed_duration_sec:", "trim_method:", "trim_confidence:"
-                ]):
-                    lines.append(line.rstrip())
-
-    lines.append(f"trim_status: {trim_info['status']}")
-    lines.append(f"trim_start_sec: {trim_info['trim_start']:.3f}")
-    lines.append(f"trim_end_sec: {trim_info['trim_end']:.3f}")
-    lines.append(f"trimmed_duration_sec: {(trim_info['trim_end'] - trim_info['trim_start']):.3f}")
-    lines.append(f"trim_method: {trim_info['method']}")
-    lines.append(f"trim_confidence: {trim_info['confidence']:.2f}")
-
+def write_jukebox_companion_txt(txt_path, trim_info, artist, title):
+    lines = [
+        f"title: {title}",
+        f"artist: {artist}",
+        "trim_status: trimmed",
+        f"trim_start_sec: {trim_info['trim_start']:.3f}",
+        f"trim_end_sec: {trim_info['trim_end']:.3f}",
+        f"trimmed_duration_sec: {(trim_info['trim_end'] - trim_info['trim_start']):.3f}",
+        f"trim_method: {trim_info['method']}",
+        f"trim_confidence: {trim_info['confidence']:.2f}",
+        f"source_take: {os.path.basename(trim_info['primary_file'])}",
+        f"compared_take: {os.path.basename(trim_info['compared_file'])}",
+        f"norm_corr: {trim_info.get('norm_corr', 0.0):.4f}"
+    ]
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
 
-def analyze_song(song_paths, verbose=False):
+def analyze_song(artist, title, raw_paths, jukebox_dir, threshold=CONFIDENCE_THRESHOLD, verbose=False):
     """
-    Analyzes one song group (single capture or multiple takes).
-    Returns dict with decision and best trim points.
+    Evaluates a song group according to the 2-Airing Rule.
+    Returns decision dict.
     """
-    primary = song_paths[0]
-    txt_path = os.path.splitext(primary)[0] + ".txt"
-    txt_data = parse_companion_txt(txt_path)
-    offset_front = txt_data.get("offset_front_sec", 15.0)
-    offset_end = txt_data.get("offset_end_sec", 15.0)
-    duration = txt_data.get("total_duration_sec", get_audio_duration(primary))
+    canonical_m4a = os.path.join(jukebox_dir, artist, f"{title}.m4a")
+    canonical_txt = os.path.join(jukebox_dir, artist, f"{title}.txt")
 
-    # Check if already trimmed
-    comment = get_file_comment(primary)
-    if txt_data.get("trim_status") in ("trimmed", "already_trimmed") or "trimmed=true" in comment:
+    # 1. Already verified in Jukebox?
+    if os.path.isfile(canonical_m4a):
+        txt_data = parse_companion_txt(canonical_txt)
+        dur = txt_data.get("trimmed_duration_sec", get_audio_duration(canonical_m4a))
+        conf = txt_data.get("trim_confidence", 1.0)
+        method = txt_data.get("trim_method", "cross_correlation_divergence")
         return {
-            "method": "already_trimmed",
-            "trim_start": 0.0,
-            "trim_end": duration,
-            "confidence": 1.0,
-            "duration": duration,
-            "primary_file": primary,
-            "all_files": song_paths,
-            "status": "already_trimmed"
+            "status": "already_in_jukebox",
+            "canonical_m4a": canonical_m4a,
+            "canonical_txt": canonical_txt,
+            "duration": dur,
+            "confidence": conf,
+            "method": method,
+            "raw_takes_count": len(raw_paths)
         }
 
-    result = None
-
-    # Tier 1: If 2+ takes exist, try multi-capture divergence across candidate pairs
-    if len(song_paths) >= 2:
-        best_align = None
-        for i in range(len(song_paths)):
-            for j in range(i + 1, len(song_paths)):
-                if verbose:
-                    print(f"    [ANALYZE] Comparing take {i+1} ({os.path.basename(song_paths[i])}) vs take {j+1} ({os.path.basename(song_paths[j])})")
-                align_res = multi_capture_alignment(song_paths[i], song_paths[j], verbose=verbose)
-                if align_res and align_res["confidence"] >= CONFIDENCE_THRESHOLD:
-                    best_align = align_res
-                    primary = song_paths[i]
-                    txt_path = os.path.splitext(primary)[0] + ".txt"
-                    txt_data = parse_companion_txt(txt_path)
-                    break
-            if best_align:
-                break
-        if best_align:
-            result = best_align
-
-    # Tier 2: Single-capture silence detection fallback
-    if result is None:
-        silence_res = find_silence_boundaries(primary, offset_front, offset_end, duration)
-        if silence_res:
-            result = silence_res
-
-    if result is None:
-        result = {
-            "method": "none",
-            "trim_start": 0.0,
-            "trim_end": duration,
+    # 2. Strict 2-Airing Rule: < 2 takes cannot be verified
+    if len(raw_paths) < 2:
+        dur = get_audio_duration(raw_paths[0]) if raw_paths else 0.0
+        return {
+            "status": "pending_second_airing",
+            "duration": dur,
             "confidence": 0.0,
-            "duration": duration
+            "raw_takes_count": len(raw_paths),
+            "primary_file": raw_paths[0] if raw_paths else None
         }
 
-    result["primary_file"] = primary
-    result["all_files"] = song_paths
-    result["status"] = "trimmed" if result["confidence"] >= CONFIDENCE_THRESHOLD else "pending_confirmation"
-    return result
+    # 3. 2+ takes exist: Pairwise cross-correlation divergence
+    best_align = None
+    for i in range(len(raw_paths)):
+        for j in range(len(raw_paths)):
+            if i == j:
+                continue
+            if verbose:
+                print(f"    [ANALYZE] Correlating: {os.path.basename(raw_paths[i])} vs {os.path.basename(raw_paths[j])}")
+            align_res = multi_capture_alignment(raw_paths[i], raw_paths[j], verbose=verbose)
+            if align_res and align_res["confidence"] >= threshold:
+                if best_align is None or align_res["confidence"] > best_align["confidence"]:
+                    best_align = align_res
+                    if best_align["confidence"] >= 0.95:
+                        break
+        if best_align and best_align["confidence"] >= 0.95:
+            break
+
+    if best_align and best_align["confidence"] >= threshold:
+        best_align["status"] = "ready_to_mint"
+        best_align["canonical_m4a"] = canonical_m4a
+        best_align["canonical_txt"] = canonical_txt
+        best_align["raw_takes_count"] = len(raw_paths)
+        return best_align
+
+    # 4. Takes exist but correlation failed to meet quality threshold
+    return {
+        "status": "correlation_ambiguous",
+        "duration": get_audio_duration(raw_paths[0]),
+        "confidence": best_align["confidence"] if best_align else 0.0,
+        "raw_takes_count": len(raw_paths),
+        "primary_file": raw_paths[0]
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NRSC5 Song Boundary Trimmer")
-    parser.add_argument("--dir", default=RECORDINGS_DIR, help="Path to recordings directory")
-    parser.add_argument("--dry-run", action="store_true", help="Analyze and print boundary decisions without modifying files")
-    parser.add_argument("--apply", action="store_true", help="Apply destructive lossless trimming on high-confidence songs")
-    parser.add_argument("--dedup", action="store_true", help="Delete duplicate takes after successful high-confidence trimming")
-    parser.add_argument("--migrate", action="store_true", help="Rename legacy untrimmed raw files to _100+ format")
-    parser.add_argument("--analyze", help="Analyze a specific song file or pattern")
+    parser = argparse.ArgumentParser(description="NRSC5 Jukebox Builder (2-Airing Rule)")
+    parser.add_argument("--recordings-dir", "--dir", default=RECORDINGS_DIR, help="Path to raw recordings directory")
+    parser.add_argument("--jukebox-dir", default=JUKEBOX_DIR, help="Path to curated jukebox directory")
+    parser.add_argument("--apply", action="store_true", help="Mint eligible high-confidence songs into the jukebox directory")
+    parser.add_argument("--dry-run", action="store_true", help="Analyze and print boundary decisions without modifying disk")
+    parser.add_argument("--threshold", type=float, default=CONFIDENCE_THRESHOLD, help="Confidence threshold for correlation divergence (default: 0.85)")
+    parser.add_argument("--song", help="Filter analysis to a specific song title or artist substring")
+    parser.add_argument("--verbose", action="store_true", help="Print verbose correlation debug information")
     args = parser.parse_args()
 
-    if not args.dry_run and not args.apply and not args.analyze and not args.migrate:
-        parser.print_help()
-        sys.exit(0)
+    # Default to dry-run reporting if --apply is not passed
+    is_apply = args.apply
 
-    if args.migrate:
-        migrate_raw_files(args.dir, dry_run=args.dry_run)
-        if not args.apply and not args.analyze:
-            sys.exit(0)
-
-    groups = find_song_groups(args.dir)
+    groups = find_raw_song_groups(args.recordings_dir)
     total_groups = len(groups)
-    print(f"[TRIMMER] Scanning {total_groups} unique songs in {args.dir}...")
+    print(f"[JUKEBOX BUILDER] Scanning {total_groups} unique songs in {args.recordings_dir}...")
+    print(f"[JUKEBOX BUILDER] Output jukebox directory: {args.jukebox_dir}")
+    print(f"[JUKEBOX BUILDER] Quality mode: Strict 2-Airing Cross-Correlation (threshold >= {args.threshold:.2f})\n")
 
-    already_trimmed_count = 0
-    high_conf_count = 0
-    low_conf_count = 0
-    trimmed_count = 0
+    already_jukebox_count = 0
+    mintable_count = 0
+    minted_count = 0
+    waiting_count = 0
+    ambiguous_count = 0
 
     for (artist, title), paths in sorted(groups.items()):
-        if args.analyze and not any(args.analyze.lower() in p.lower() for p in paths):
+        if args.song and (args.song.lower() not in title.lower() and args.song.lower() not in artist.lower()):
             continue
 
-        res = analyze_song(paths, verbose=(args.analyze is not None))
-        conf = res["confidence"]
+        res = analyze_song(
+            artist, title, paths, args.jukebox_dir,
+            threshold=args.threshold, verbose=args.verbose
+        )
         status = res["status"]
-        method = res["method"]
-        t_start = res["trim_start"]
-        t_end = res["trim_end"]
-        orig_dur = res.get("duration", 0.0)
-        new_dur = max(0.0, t_end - t_start)
 
-        if status == "already_trimmed":
-            already_trimmed_count += 1
-            print(f"⏭️  [TRIMMED]   \"{title}\" by {artist}: already trimmed ({orig_dur:.1f}s)")
-            if args.apply and args.dedup and len(paths) > 1:
-                for dup in paths:
-                    if dup == res["primary_file"]:
-                        continue
-                    try:
-                        if os.path.exists(dup):
-                            os.unlink(dup)
-                        dup_txt = os.path.splitext(dup)[0] + ".txt"
-                        if os.path.isfile(dup_txt):
-                            os.unlink(dup_txt)
-                        print(f"    -> Cleaned post-trim duplicate take: {os.path.basename(dup)}")
-                    except OSError:
-                        pass
-            continue
+        if status == "already_in_jukebox":
+            already_jukebox_count += 1
+            dur = res.get("duration", 0.0)
+            print(f"🎵 [JUKEBOX]   \"{title}\" by {artist}: verified in jukebox ({dur:.1f}s, {res['raw_takes_count']} raw takes archived)")
 
-        is_high = conf >= CONFIDENCE_THRESHOLD
-        if is_high:
-            high_conf_count += 1
-        else:
-            low_conf_count += 1
+        elif status == "ready_to_mint":
+            mintable_count += 1
+            t_start = res["trim_start"]
+            t_end = res["trim_end"]
+            orig_dur = res["duration"]
+            new_dur = max(0.0, t_end - t_start)
+            conf = res["confidence"]
+            src_take = os.path.basename(res["primary_file"])
+            ref_take = os.path.basename(res["compared_file"])
 
-        prefix = "✅ [HIGH CONF]" if is_high else "⏳ [PENDING]  "
-        print(f"{prefix} \"{title}\" by {artist} ({len(paths)} take{'s' if len(paths)>1 else ''}): "
-              f"trim [{t_start:.2f}s -> {t_end:.2f}s] (dur: {new_dur:.1f}s / orig: {orig_dur:.1f}s, "
-              f"conf: {conf:.2f}, via {method})")
+            print(f"✨ [MINTABLE]  \"{title}\" by {artist} ({res['raw_takes_count']} takes): "
+                  f"trim [{t_start:.2f}s -> {t_end:.2f}s] (dur: {new_dur:.1f}s / raw: {orig_dur:.1f}s, "
+                  f"conf: {conf:.2f}, source: {src_take} vs {ref_take})")
 
-        if args.apply:
-            if is_high:
-                canonical_m4a = os.path.join(os.path.dirname(res["primary_file"]), f"{title}.m4a")
-                canonical_txt = os.path.join(os.path.dirname(res["primary_file"]), f"{title}.txt")
-                comment_tag = f"trimmed=true;start={t_start:.3f};end={t_end:.3f};method={method};conf={conf:.2f}"
-                ok = execute_lossless_trim(res["primary_file"], t_start, t_end, out_path=canonical_m4a, trim_comment=comment_tag)
+            if is_apply:
+                comment_tag = f"trimmed=true;start={t_start:.3f};end={t_end:.3f};method=cross_correlation_divergence;conf={conf:.2f}"
+                ok = execute_lossless_trim(
+                    res["primary_file"], t_start, t_end,
+                    out_path=res["canonical_m4a"], trim_comment=comment_tag
+                )
                 if ok:
-                    trimmed_count += 1
-                    update_companion_txt(canonical_txt, res)
-                    print(f"    -> Losslessly trimmed to {os.path.basename(canonical_m4a)}")
+                    write_jukebox_companion_txt(res["canonical_txt"], res, artist, title)
+                    minted_count += 1
+                    print(f"    -> Successfully minted to {res['canonical_m4a']}")
+                else:
+                    print(f"    -> ERROR: ffmpeg remux failed for {res['canonical_m4a']}")
 
-                    if args.dedup:
-                        for dup in paths:
-                            if dup == canonical_m4a:
-                                continue
-                            try:
-                                if os.path.exists(dup):
-                                    os.unlink(dup)
-                                dup_txt = os.path.splitext(dup)[0] + ".txt"
-                                if os.path.exists(dup_txt):
-                                    os.unlink(dup_txt)
-                                print(f"    -> Cleaned raw take: {os.path.basename(dup)}")
-                            except OSError:
-                                pass
-            else:
-                txt_path = os.path.splitext(res["primary_file"])[0] + ".txt"
-                update_companion_txt(txt_path, res)
+        elif status == "pending_second_airing":
+            waiting_count += 1
+            print(f"⏳ [WAITING]   \"{title}\" by {artist}: 1 take recorded, waiting for 2nd airing")
 
-    print("\n" + "=" * 60)
-    print(f"Summary: {total_groups} songs inspected.")
-    print(f"  Already Trimmed:                      {already_trimmed_count}")
-    print(f"  High Confidence (Eligible for trim):  {high_conf_count}")
-    print(f"  Pending / Low Confidence (Preserved): {low_conf_count}")
-    if args.apply:
-        print(f"  Successfully Trimmed In-Place:        {trimmed_count}")
-    print("=" * 60)
+        elif status == "correlation_ambiguous":
+            ambiguous_count += 1
+            conf = res.get("confidence", 0.0)
+            print(f"⚠️  [AMBIGUOUS] \"{title}\" by {artist}: {res['raw_takes_count']} takes, but correlation did not meet threshold ({conf:.2f} < {args.threshold:.2f})")
+
+    print("\n" + "=" * 65)
+    print(f"Jukebox Builder Summary ({total_groups} unique songs inspected):")
+    print(f"  Already Verified in Jukebox:   {already_jukebox_count}")
+    if is_apply:
+        print(f"  Successfully Minted Today:     {minted_count}")
+    else:
+        print(f"  Eligible / Ready to Mint:      {mintable_count} (run with --apply to mint)")
+    print(f"  Waiting for 2nd Airing:        {waiting_count}")
+    print(f"  Ambiguous (Need 3rd Airing):   {ambiguous_count}")
+    print("=" * 65)
 
 
 if __name__ == "__main__":

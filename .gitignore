@@ -27,6 +27,7 @@ _synth.log
 # Recordings and test captures
 /recordings/
 /test_recordings/
+/jukebox/
 support/*.cu8
 support/*.hdc
 support/*.wav

@@ -2,7 +2,7 @@
 set -u
 
 NRSC5_BIN="/home/benjamin/nrsc5/build/src/nrsc5"
-RECORDINGS_DIR="${RECORDINGS_DIR:-/home/benjamin/nrsc5/recordings}"
+RECORDINGS_DIR="${RECORDINGS_DIR:-/home/benjamin/nrsc5/recordings/raw}"
 CONF_FILE="${CONF_FILE:-/home/benjamin/nrsc5/stations.conf}"
 PREROLL="${NRSC5_PREROLL:-2.5}"
 STATUS_FILE="${RECORDINGS_DIR}/.current_station"

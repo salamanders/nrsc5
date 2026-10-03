@@ -11,7 +11,8 @@ import re
 
 PORT = int(os.environ.get("PIRATE_PORT", 80))
 HOST = os.environ.get("PIRATE_HOST", "10.42.0.1")
-RECORDINGS_DIR = os.environ.get("RECORDINGS_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "recordings")))
+JUKEBOX_DIR = os.environ.get("JUKEBOX_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "jukebox")))
+RECORDINGS_DIR = os.environ.get("RECORDINGS_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "recordings", "raw")))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -99,9 +100,44 @@ def run_station_reaper():
             pass
 
 def scan_songs():
-    """Scans the recordings directory and returns a sorted list of unique songs (> 1 KB).
-    Prioritizes trimmed master tracks over raw broadcast takes.
+    """Scans the jukebox directory for curated tracks (> 1 KB).
+    If jukebox is empty, falls back to raw recordings.
     """
+    songs = []
+
+    # Priority 1: Curated Jukebox library
+    if os.path.isdir(JUKEBOX_DIR):
+        for root, dirs, files in os.walk(JUKEBOX_DIR):
+            for f in sorted(files):
+                if f.lower().endswith(".m4a") and not f.startswith("."):
+                    full_path = os.path.join(root, f)
+                    try:
+                        if os.path.getsize(full_path) <= 1024:
+                            continue
+                    except OSError:
+                        continue
+
+                    rel_path = os.path.relpath(full_path, JUKEBOX_DIR)
+                    parts = rel_path.split(os.sep)
+                    artist = parts[0] if len(parts) >= 2 else "Unknown"
+                    clean_title = os.path.splitext(parts[-1])[0]
+
+                    songs.append({
+                        "full_path": full_path,
+                        "rel_path": rel_path.replace(os.sep, "/"),
+                        "artist": artist,
+                        "title": clean_title,
+                        "display_artist": artist.replace("_", " "),
+                        "display_title": clean_title.replace("_", " "),
+                        "is_trimmed": True,
+                        "mtime": os.path.getmtime(full_path)
+                    })
+
+    if songs:
+        songs.sort(key=lambda s: (s["display_artist"].lower(), s["display_title"].lower()))
+        return songs
+
+    # Priority 2: Fallback to raw recordings directory if jukebox is not yet populated
     if not os.path.isdir(RECORDINGS_DIR):
         return []
 
@@ -112,7 +148,7 @@ def scan_songs():
                 full_path = os.path.join(root, f)
                 try:
                     if os.path.getsize(full_path) <= 1024:
-                        continue  # Filter empty or broken stubs (Bug 2.2 / 3.3)
+                        continue
                 except OSError:
                     continue
 
@@ -121,7 +157,6 @@ def scan_songs():
                 artist = parts[0] if len(parts) >= 2 else "Unknown"
                 raw_title = os.path.splitext(parts[-1])[0]
                 clean_title = re.sub(r"_\d{3}$", "", raw_title)
-                is_trimmed = (raw_title == clean_title)
 
                 key = (artist, clean_title)
                 if key not in grouped:
@@ -134,19 +169,13 @@ def scan_songs():
                     "title": clean_title,
                     "display_artist": artist.replace("_", " "),
                     "display_title": clean_title.replace("_", " "),
-                    "is_trimmed": is_trimmed,
+                    "is_trimmed": False,
                     "mtime": os.path.getmtime(full_path)
                 })
 
-    songs = []
     for key, tracks in grouped.items():
-        # Prefer trimmed track if available; otherwise pick the most recent raw take
-        trimmed = [t for t in tracks if t["is_trimmed"]]
-        if trimmed:
-            songs.append(trimmed[0])
-        else:
-            tracks.sort(key=lambda t: t["mtime"], reverse=True)
-            songs.append(tracks[0])
+        tracks.sort(key=lambda t: t["mtime"], reverse=True)
+        songs.append(tracks[0])
 
     songs.sort(key=lambda s: (s["display_artist"].lower(), s["display_title"].lower()))
     return songs
@@ -314,11 +343,16 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(400, "No booty specified!")
                 return
 
-            full_path = os.path.normpath(os.path.join(RECORDINGS_DIR, rel_path))
+            # Check JUKEBOX_DIR first, then RECORDINGS_DIR
+            full_path = None
+            for base in [JUKEBOX_DIR, RECORDINGS_DIR]:
+                candidate = os.path.normpath(os.path.join(base, rel_path))
+                if candidate.startswith(base) and os.path.isfile(candidate):
+                    full_path = candidate
+                    break
 
-            # Hacker protection: keep strictly within RECORDINGS_DIR
-            if not full_path.startswith(RECORDINGS_DIR) or not os.path.isfile(full_path):
-                self.send_error(404, "That treasure has already been plundered by another pirate!")
+            if not full_path:
+                self.send_error(404, "That treasure is not in the chest!")
                 return
 
             try:
@@ -327,49 +361,29 @@ class PirateHandler(http.server.BaseHTTPRequestHandler):
                     self.send_error(404, "That treasure was damaged or lost in the depths!")
                     return
             except OSError:
-                self.send_error(404, "That treasure has already been plundered by another pirate!")
+                self.send_error(404, "That treasure is not in the chest!")
                 return
 
-            # Protection against Apple CNA file deletion bug:
-            # If request is from an Apple captive popup, do NOT stream & delete!
+            # Protection against Apple CNA file saving restriction
             if self.is_cna_client():
                 self.send_error(403, f"Apple blocks saving songs in this preview window. Copy http://{HOST}/index.html into Safari to plunder!")
                 return
 
             filename = os.path.basename(full_path)
-            # IP cooldown disabled
-            # client_ip = self.client_address[0]
-            # PLUNDER_COOLDOWN[client_ip] = time.time()
 
             self.send_response(200)
             self.send_header("Content-Type", "audio/mp4")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(file_size))
-            # Cookie disabled to allow multiple testing downloads without lockout
-            # self.send_header("Set-Cookie", "plundered=1; Path=/; Max-Age=600")
             self.end_headers()
 
-            # Stream the file to client, then delete from disk
+            # Stream the file to client (preserving the library intact!)
             try:
                 with open(full_path, "rb") as f:
                     shutil.copyfileobj(f, self.wfile)
-                os.unlink(full_path)
-                txt_path = os.path.splitext(full_path)[0] + ".txt"
-                if os.path.isfile(txt_path):
-                    try:
-                        os.unlink(txt_path)
-                    except OSError:
-                        pass
-                print(f"[PIRATE] Plundered & deleted: {filename}")
-
-                # Clean up empty parent artist directory if all songs for this artist were plundered (Bug 3.4)
-                parent_dir = os.path.dirname(full_path)
-                if parent_dir != RECORDINGS_DIR and parent_dir.startswith(RECORDINGS_DIR):
-                    try:
-                        os.rmdir(parent_dir)
-                        print(f"[PIRATE] Cleaned empty vault drawer: {os.path.basename(parent_dir)}")
-                    except OSError:
-                        pass
+                print(f"[PIRATE] Served song: {filename}")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             except Exception as e:
                 print(f"[PIRATE] Download error for {filename}: {e}")
             return
