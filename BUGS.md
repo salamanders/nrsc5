@@ -53,9 +53,8 @@ This document details the engineering design decisions, bug fixes, failure modes
   - Raw captures are recorded with 15-second pre-roll and post-roll overlap buffers and archived permanently in `recordings/raw/<Artist>/`.
   - Songs are only trimmed and minted into `jukebox/<Artist>/<Title>.m4a` when 2 or more independent airings exist and cross-correlate with high confidence ($\ge 0.85$).
 
-### 3.2 Automated Minting on Capture Completion
-- **Problem**: Trimming previously required manual batch post-processing passes.
+### 3.2 Decoupled Minting & Watcher Architecture
+- **Problem**: Calling external Python scripts directly from C via `fork()`/`execv()` tightly coupled the low-level SDR receiver to userland tooling and risked deadlocks or process leaks.
 - **Solution**:
-  - As soon as `remux_worker_thread()` in `src/recorder.c` completes writing a new raw capture, it automatically spawns `trimmer.py --apply --artist "<clean_artist>" --title "<clean_title>"`.
-  - If this new take provides the second airing needed for high-confidence boundary resolution, the clean master is minted into the Jukebox immediately.
-  - Raw source takes are always kept intact.
+  - `src/recorder.c` remains 100% decoupled and focused purely on SDR receiving and lossless audio remuxing.
+  - `scripts/trimmer.py` operates independently in watch mode (`--watch`) or as an on-demand batch builder, safely scanning `recordings/raw/` and minting eligible songs without ever risking audio capture stability.

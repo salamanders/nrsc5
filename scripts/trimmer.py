@@ -19,6 +19,7 @@ import sys
 import argparse
 import subprocess
 import re
+import time
 import numpy as np
 from scipy import signal
 
@@ -382,27 +383,15 @@ def analyze_song(artist, title, raw_paths, jukebox_dir, threshold=CONFIDENCE_THR
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="NRSC5 Jukebox Builder (2-Airing Rule)")
-    parser.add_argument("--recordings-dir", "--dir", default=RECORDINGS_DIR, help="Path to raw recordings directory")
-    parser.add_argument("--jukebox-dir", default=JUKEBOX_DIR, help="Path to curated jukebox directory")
-    parser.add_argument("--apply", action="store_true", help="Mint eligible high-confidence songs into the jukebox directory")
-    parser.add_argument("--dry-run", action="store_true", help="Analyze and print boundary decisions without modifying disk")
-    parser.add_argument("--threshold", type=float, default=CONFIDENCE_THRESHOLD, help="Confidence threshold for correlation divergence (default: 0.85)")
-    parser.add_argument("--artist", help="Target a specific artist name")
-    parser.add_argument("--title", help="Target a specific song title")
-    parser.add_argument("--song", help="Filter analysis to a specific song title or artist substring")
-    parser.add_argument("--verbose", action="store_true", help="Print verbose correlation debug information")
-    args = parser.parse_args()
-
-    # Default to dry-run reporting if --apply is not passed
-    is_apply = args.apply
-
-    groups = find_raw_song_groups(args.recordings_dir)
+def process_library(recordings_dir, jukebox_dir, is_apply=False, threshold=CONFIDENCE_THRESHOLD,
+                    song_filter=None, artist_filter=None, title_filter=None, verbose=False, quiet=False):
+    groups = find_raw_song_groups(recordings_dir)
     total_groups = len(groups)
-    print(f"[JUKEBOX BUILDER] Scanning {total_groups} unique songs in {args.recordings_dir}...")
-    print(f"[JUKEBOX BUILDER] Output jukebox directory: {args.jukebox_dir}")
-    print(f"[JUKEBOX BUILDER] Quality mode: Strict 2-Airing Cross-Correlation (threshold >= {args.threshold:.2f})\n")
+
+    if not quiet:
+        print(f"[JUKEBOX BUILDER] Scanning {total_groups} unique songs in {recordings_dir}...")
+        print(f"[JUKEBOX BUILDER] Output jukebox directory: {jukebox_dir}")
+        print(f"[JUKEBOX BUILDER] Quality mode: Strict 2-Airing Cross-Correlation (threshold >= {threshold:.2f})\n")
 
     already_jukebox_count = 0
     mintable_count = 0
@@ -411,23 +400,24 @@ def main():
     ambiguous_count = 0
 
     for (artist, title), paths in sorted(groups.items()):
-        if args.artist and args.artist.lower() != artist.lower():
+        if artist_filter and artist_filter.lower() != artist.lower():
             continue
-        if args.title and args.title.lower() != title.lower():
+        if title_filter and title_filter.lower() != title.lower():
             continue
-        if args.song and (args.song.lower() not in title.lower() and args.song.lower() not in artist.lower()):
+        if song_filter and (song_filter.lower() not in title.lower() and song_filter.lower() not in artist.lower()):
             continue
 
         res = analyze_song(
-            artist, title, paths, args.jukebox_dir,
-            threshold=args.threshold, verbose=args.verbose
+            artist, title, paths, jukebox_dir,
+            threshold=threshold, verbose=verbose
         )
         status = res["status"]
 
         if status == "already_in_jukebox":
             already_jukebox_count += 1
-            dur = res.get("duration", 0.0)
-            print(f"🎵 [JUKEBOX]   \"{title}\" by {artist}: verified in jukebox ({dur:.1f}s, {res['raw_takes_count']} raw takes archived)")
+            if not quiet:
+                dur = res.get("duration", 0.0)
+                print(f"🎵 [JUKEBOX]   \"{title}\" by {artist}: verified in jukebox ({dur:.1f}s, {res['raw_takes_count']} raw takes archived)")
 
         elif status == "ready_to_mint":
             mintable_count += 1
@@ -439,9 +429,10 @@ def main():
             src_take = os.path.basename(res["primary_file"])
             ref_take = os.path.basename(res["compared_file"])
 
-            print(f"✨ [MINTABLE]  \"{title}\" by {artist} ({res['raw_takes_count']} takes): "
-                  f"trim [{t_start:.2f}s -> {t_end:.2f}s] (dur: {new_dur:.1f}s / raw: {orig_dur:.1f}s, "
-                  f"conf: {conf:.2f}, source: {src_take} vs {ref_take})")
+            if not quiet or is_apply:
+                print(f"✨ [MINTABLE]  \"{title}\" by {artist} ({res['raw_takes_count']} takes): "
+                      f"trim [{t_start:.2f}s -> {t_end:.2f}s] (dur: {new_dur:.1f}s / raw: {orig_dur:.1f}s, "
+                      f"conf: {conf:.2f}, source: {src_take} vs {ref_take})")
 
             if is_apply:
                 comment_tag = f"trimmed=true;start={t_start:.3f};end={t_end:.3f};method=cross_correlation_divergence;conf={conf:.2f}"
@@ -458,23 +449,70 @@ def main():
 
         elif status == "pending_second_airing":
             waiting_count += 1
-            print(f"⏳ [WAITING]   \"{title}\" by {artist}: 1 take recorded, waiting for 2nd airing")
+            if not quiet:
+                print(f"⏳ [WAITING]   \"{title}\" by {artist}: 1 take recorded, waiting for 2nd airing")
 
         elif status == "correlation_ambiguous":
             ambiguous_count += 1
-            conf = res.get("confidence", 0.0)
-            print(f"⚠️  [AMBIGUOUS] \"{title}\" by {artist}: {res['raw_takes_count']} takes, but correlation did not meet threshold ({conf:.2f} < {args.threshold:.2f})")
+            if not quiet:
+                conf = res.get("confidence", 0.0)
+                print(f"⚠️  [AMBIGUOUS] \"{title}\" by {artist}: {res['raw_takes_count']} takes, but correlation did not meet threshold ({conf:.2f} < {threshold:.2f})")
 
-    print("\n" + "=" * 65)
-    print(f"Jukebox Builder Summary ({total_groups} unique songs inspected):")
-    print(f"  Already Verified in Jukebox:   {already_jukebox_count}")
-    if is_apply:
-        print(f"  Successfully Minted Today:     {minted_count}")
-    else:
-        print(f"  Eligible / Ready to Mint:      {mintable_count} (run with --apply to mint)")
-    print(f"  Waiting for 2nd Airing:        {waiting_count}")
-    print(f"  Ambiguous (Need 3rd Airing):   {ambiguous_count}")
-    print("=" * 65)
+    if not quiet:
+        print("\n" + "=" * 65)
+        print(f"Jukebox Builder Summary ({total_groups} unique songs inspected):")
+        print(f"  Already Verified in Jukebox:   {already_jukebox_count}")
+        if is_apply:
+            print(f"  Successfully Minted Today:     {minted_count}")
+        else:
+            print(f"  Eligible / Ready to Mint:      {mintable_count} (run with --apply to mint)")
+        print(f"  Waiting for 2nd Airing:        {waiting_count}")
+        print(f"  Ambiguous (Need 3rd Airing):   {ambiguous_count}")
+        print("=" * 65)
+
+    return minted_count
+
+
+def main():
+    parser = argparse.ArgumentParser(description="NRSC5 Jukebox Builder (2-Airing Rule)")
+    parser.add_argument("--recordings-dir", "--dir", default=RECORDINGS_DIR, help="Path to raw recordings directory")
+    parser.add_argument("--jukebox-dir", default=JUKEBOX_DIR, help="Path to curated jukebox directory")
+    parser.add_argument("--apply", action="store_true", help="Mint eligible high-confidence songs into the jukebox directory")
+    parser.add_argument("--dry-run", action="store_true", help="Analyze and print boundary decisions without modifying disk")
+    parser.add_argument("--watch", type=int, nargs="?", const=30, default=None, metavar="SECONDS",
+                        help="Run continuously in background, polling for new airings every SECONDS (default: 30s)")
+    parser.add_argument("--threshold", type=float, default=CONFIDENCE_THRESHOLD, help="Confidence threshold for correlation divergence (default: 0.85)")
+    parser.add_argument("--artist", help="Target a specific artist name")
+    parser.add_argument("--title", help="Target a specific song title")
+    parser.add_argument("--song", help="Filter analysis to a specific song title or artist substring")
+    parser.add_argument("--verbose", action="store_true", help="Print verbose correlation debug information")
+    args = parser.parse_args()
+
+    if args.watch is not None:
+        interval = max(5, args.watch)
+        print(f"[JUKEBOX BUILDER] Watch mode active: polling {args.recordings_dir} every {interval}s.")
+        print("Press Ctrl+C to stop.\n")
+        try:
+            while True:
+                process_library(
+                    args.recordings_dir, args.jukebox_dir, is_apply=True,
+                    threshold=args.threshold, song_filter=args.song,
+                    artist_filter=args.artist, title_filter=args.title,
+                    verbose=args.verbose, quiet=True
+                )
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\n[JUKEBOX BUILDER] Watch mode stopped.")
+        return
+
+    # Default one-shot run
+    is_apply = args.apply
+    process_library(
+        args.recordings_dir, args.jukebox_dir, is_apply=is_apply,
+        threshold=args.threshold, song_filter=args.song,
+        artist_filter=args.artist, title_filter=args.title,
+        verbose=args.verbose, quiet=False
+    )
 
 
 if __name__ == "__main__":

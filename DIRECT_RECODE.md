@@ -325,7 +325,7 @@ Listening tests across multiple captures (`Blur - Song 2`, `Boston - Peace of Mi
 The system operates autonomously with a singular focus:
 1. **Listen to the radio**: Stream HD Radio multicast channels continuously using an RTL-SDR receiver.
 2. **Record multiple copies of each song**: Save every airing with generous 15-second pre-roll and post-roll overlap into `recordings/raw/<Artist>/<Title>_###.m4a`.
-3. **Automated Minting on Arrival**: When the latest copy of a song finishes recording, the recorder automatically triggers `scripts/trimmer.py` for that song. If enough takes (2+) now exist to determine sample-accurate song boundaries with high confidence ($\ge 0.85$), the pristine trimmed master is minted into `jukebox/<Artist>/<Title>.m4a`.
+3. **Autonomous Jukebox Minting**: The Jukebox Builder (`scripts/trimmer.py`) runs in watch mode or on demand. When enough takes (2+) exist to determine sample-accurate song boundaries with high confidence ($\ge 0.85$), the pristine trimmed master is minted into `jukebox/<Artist>/<Title>.m4a`.
 4. **Permanent Archive**: The untrimmed raw takes in `recordings/raw/` are **always kept intact**—never deleted or modified.
 
 ### Multi-Capture Cross-Correlation Divergence (The "2-Airing Rule")

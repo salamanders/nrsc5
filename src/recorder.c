@@ -209,9 +209,6 @@ typedef struct {
     unsigned long packets_preroll;
     unsigned long packets_body;
     unsigned long packets_postroll;
-    char base_dir[MAX_PATH_LEN];
-    char clean_artist[256];
-    char clean_title[256];
 } remux_job_t;
 
 static void *remux_worker_thread(void *arg)
@@ -324,25 +321,6 @@ static void *remux_worker_thread(void *arg)
                  job->has_art ? ", embedded art" : "",
                  job->offset_front_sec, job->offset_end_sec,
                  job->final_audio_path);
-
-        /* Automatically check if enough copies exist to mint a high-confidence trimmed master */
-        pid_t tpid = fork();
-        if (tpid == 0) {
-            char *trim_argv[] = {
-                "trimmer.py",
-                "--apply",
-                "--recordings-dir", job->base_dir,
-                "--artist", job->clean_artist,
-                "--title", job->clean_title,
-                NULL
-            };
-            execv("/home/benjamin/nrsc5/scripts/trimmer.py", trim_argv);
-            execvp("trimmer.py", trim_argv);
-            _exit(127);
-        } else if (tpid > 0) {
-            int tstatus = 0;
-            waitpid(tpid, &tstatus, 0);
-        }
     }
 
     /* Clean up temporary staging files */
@@ -433,9 +411,6 @@ static void finalize_track(song_recorder_t *rec, active_track_t *track)
             job->packets_preroll = track->packets_preroll;
             job->packets_body = track->packets_body;
             job->packets_postroll = track->packets_postroll;
-            snprintf(job->base_dir, sizeof(job->base_dir), "%s", rec->base_dir);
-            snprintf(job->clean_artist, sizeof(job->clean_artist), "%s", clean_artist);
-            snprintf(job->clean_title, sizeof(job->clean_title), "%s", clean_title);
 
             /* Launch detached background packaging worker */
             pthread_t tid;
