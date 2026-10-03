@@ -389,6 +389,8 @@ def main():
     parser.add_argument("--apply", action="store_true", help="Mint eligible high-confidence songs into the jukebox directory")
     parser.add_argument("--dry-run", action="store_true", help="Analyze and print boundary decisions without modifying disk")
     parser.add_argument("--threshold", type=float, default=CONFIDENCE_THRESHOLD, help="Confidence threshold for correlation divergence (default: 0.85)")
+    parser.add_argument("--artist", help="Target a specific artist name")
+    parser.add_argument("--title", help="Target a specific song title")
     parser.add_argument("--song", help="Filter analysis to a specific song title or artist substring")
     parser.add_argument("--verbose", action="store_true", help="Print verbose correlation debug information")
     args = parser.parse_args()
@@ -409,6 +411,10 @@ def main():
     ambiguous_count = 0
 
     for (artist, title), paths in sorted(groups.items()):
+        if args.artist and args.artist.lower() != artist.lower():
+            continue
+        if args.title and args.title.lower() != title.lower():
+            continue
         if args.song and (args.song.lower() not in title.lower() and args.song.lower() not in artist.lower()):
             continue
 

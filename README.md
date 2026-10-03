@@ -2,41 +2,40 @@
 
 This program receives NRSC-5 digital radio stations using an RTL-SDR dongle, or by reading from I/Q files. It offers a command-line interface as well as an API upon which other applications can be built. Before using it, you'll first need to compile the program using the build instructions below.
 
-## Quick Start: Continuous Song Recording & Maker Faire Audio Hat Server
+## Quick Start: Continuous Recording & Automated Jukebox Builder
 
-### 1. Continual Song Recording
-To continuously record songs into tagged `.m4a` files with embedded album art:
+### 1. Continuous HD Radio Recording
+To continuously record HD Radio broadcasts into tagged `.m4a` files with 15-second overlap buffers:
 
 ```bash
-# Tune to frequency and program (e.g. 107.1 MHz, program 0) and record into ./recordings/raw
+# Tune to frequency and program (e.g. 98.5 MHz, HD2 program 1) and record into ./recordings/raw
 nrsc5 --record-songs ./recordings/raw 98.5 1
-
-# Optional flags:
-#   --preroll <seconds>      (pre-roll buffer to preserve song intro; default: 2.5s)
-#   --split-delay <seconds>  (grace period before splitting tracks on title change)
-#   --record-initial         (record whatever is playing immediately upon startup)
 ```
 
-### 2. Maker Faire Audio Hat Web Server (Single-Serving Plunder Server)
-To serve recordings to visitors connecting to your hat's local Wi-Fi:
-
+Or manage as a system service:
 ```bash
-# Service management (auto-starts on boot on port 80):
-sudo systemctl status pirate-server
-sudo systemctl restart pirate-server
-sudo systemctl stop pirate-server
-sudo journalctl -u pirate-server -f
-
-# Hotspot management (NetworkManager on wlan0):
-./pirate_server/hotspot.sh status   # Show status & connected visitors
-./pirate_server/hotspot.sh stop     # Reconnect wlan0 to home Wi-Fi
-./pirate_server/hotspot.sh start    # Reactivate PirateHat hotspot
-./pirate_server/hotspot.sh logs     # Tail live plunder logs
-
-# Or run manually in foreground:
-python3 pirate_server/server.py
+sudo systemctl status nrsc5-recorder
+sudo systemctl restart nrsc5-recorder
+sudo journalctl -u nrsc5-recorder -f
 ```
-Each song downloaded is automatically deleted from disk after transfer to ensure single-copy distribution compliance.
+
+### 2. Automated Jukebox Minting (The "2-Airing Rule")
+Every song recorded is saved with 15 seconds of pre-roll and post-roll padding into `recordings/raw/<Artist>/<Title>_###.m4a`.
+
+Whenever a new copy of a song finishes recording:
+1. The recorder automatically checks if 2+ takes of that song now exist in `recordings/raw/`.
+2. If 2+ takes exist, it aligns them using FFT energy envelope cross-correlation to find the exact sample-accurate divergence cliff (where station ads/DJ chatter end and the studio track begins/ends).
+3. If correlation confidence $\ge 0.85$, it losslessly cuts (`-c copy`) the pristine master track into `jukebox/<Artist>/<Title>.m4a` with companion metadata.
+4. **All untrimmed raw takes in `recordings/raw/` are always preserved.**
+
+To inspect or manually run the Jukebox Builder across the library:
+```bash
+# Dry-run analysis (see which songs are ready to mint):
+./scripts/trimmer.py --dry-run
+
+# Mint all eligible high-confidence songs into the jukebox:
+./scripts/trimmer.py --apply
+```
 
 ## Building on Ubuntu, Debian or Raspbian
 
